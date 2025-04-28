@@ -1,0 +1,474 @@
+// #include "LMStaticMap.udwh"
+#define TEST_TOP_OFFSET 64
+#define TEST_TOP_FLAG 273
+#define SEND_BUFFER_OFFSET 704
+#define GRAPH_ADDR_OFFSET 21440
+#define GRAPH_SIZE_OFFSET 21448
+#define LOCAL_JS_ENTRY_COUNT_OFFSET 21456
+#define SPMALLOC_OFFSET 21464
+#define HEAP_OFFSET 21472
+
+// #define SEND_ALL_MAP_READ
+// #define PRINT_EDGE_RESULT
+
+extern event js_broadcast__broadcast_global();
+extern event lm_allocator__spmalloc();
+extern event lm_allocator__spfree();
+extern event js__map_shuffle_reduce();
+extern event js__kv_map_emit();
+extern event js__kv_map_return();
+extern event js__kv_reduce_return();
+
+
+asm native {"
+    EXTENSION = 'load_balancer'
+    DEBUG_FLAG = False
+    LB_TYPE = ['mapper','reducer']
+    test_ws = False
+    test_random = True
+    rtype = 'lane' if test_ws else 'ud'
+    multi = not test_ws
+    map_ws = test_ws
+    red_ws = test_ws
+
+    from libraries.UDMapShuffleReduce.linkable.LinkableKVMapShuffleCombineTPL import UDKeyValueMapShuffleReduceTemplate
+    from libraries.UDMapShuffleReduce.utils.OneDimArrayKeyValueSet import OneDimKeyValueSet
+    from libraries.UDMapShuffleReduce.utils.IntermediateKeyValueSet import IntermediateKeyValueSet
+    from LinkableGlobalSync import Broadcast, GlobalSync
+    from SpMalloc import SpMallocEFA
+    from libraries.LMStaticMaps.LMStaticMap import UDKVMSR_0_OFFSET
+
+    spmalloc = SpMallocEFA(efa, state0 = state0, init_offset = SPMALLOC_OFFSET, debug=False)
+    broadcast = Broadcast(state = state0, identifier='js_broadcast')
+
+    task_name = 'js'
+    jsMSR = UDKeyValueMapShuffleReduceTemplate(efa=efa, task_name=task_name, meta_data_offset=UDKVMSR_0_OFFSET, debug_flag=DEBUG_FLAG, 
+                                                extension = EXTENSION, load_balancer_type = LB_TYPE, grlb_type = rtype, 
+                                                claim_multiple_work = multi, test_map_ws=map_ws, test_reduce_ws=red_ws, random_lb=test_random, do_all_reduce = True)
+    jsMSR.set_input_kvset(OneDimKeyValueSet('js_input', element_size=3, bypass_gen_partition=True) )
+    jsMSR.set_intermediate_kvset(IntermediateKeyValueSet('js_intermediate', key_size=1, value_size=4))
+    jsMSR.set_max_thread_per_lane(max_map_th_per_lane=64, max_reduce_th_per_lane=128, max_reduce_key_to_claim = 256)
+    jsMSR.setup_lb_cache(intermediate_cache_num_bins = 16, intermediate_cache_size = 512, materialize_kv_cache_size = 512, materialize_kv_dram_size = 1<<24)
+    print(jsMSR.heap_offset)
+
+    jsMSR.generate_udkvmsr_task()
+
+"};
+thread js {
+    unsigned long v1;
+    unsigned long v1_deg;
+    unsigned long* v1_nl;
+    unsigned long v2;
+    unsigned long v2_deg;
+    unsigned long* v2_nl;
+
+    unsigned long threashold;
+    unsigned long read_count;
+    unsigned long* local cached_nb;
+
+
+    event kv_map (unsigned long v1_id, unsigned long v2_id, unsigned long intersect_count) {
+
+        // Cache info
+        v1 = v1_id;
+        v2 = v2_id;
+        threashold = intersect_count;
+
+        // Read cached graph info
+        unsigned long* local ptr = LMBASE + GRAPH_ADDR_OFFSET;
+        unsigned long* graph = ptr[0];
+
+        // print("v1: %lu, v2: %lu, intersect_count: %lu, graph address: %lu, from spd %lu", v1_id, v2_id, intersect_count, graph, ptr);
+        
+        // Init read counts
+        read_count = 0;
+
+        // Read first v1 assigned
+        graph = graph + v1_id * 64;
+        send_dram_read(graph, 3, map_v1_read_ret);
+
+        yield;
+    }
+
+    event map_v1_read_ret(unsigned long id, unsigned long degree, unsigned long nb_list) {
+
+        // Read cached graph info
+        unsigned long* local ptr = LMBASE + GRAPH_ADDR_OFFSET;
+        unsigned long* graph = ptr[0];
+        ptr = LMBASE + GRAPH_SIZE_OFFSET;
+        unsigned long* graph_size = ptr[0];
+
+        // Calculate the number of v2 to read
+        unsigned long v1_pair_count = graph_size - v2;
+        if (threashold <= v1_pair_count) {
+            v1_pair_count = threashold;
+        }
+
+        // print("Map v1 %lu, v2 %lu, read_count %lu, v1_pair_count %lu, start v2 %lu, graph %lu, graph_size %lu", v1, v2, read_count, v1_pair_count, v2, graph, graph_size);
+        // If v1 degree > 0, read all asigned v2
+        if (degree > 0) {
+            v1_deg = degree;
+            v1_nl= nb_list;
+            graph = graph + v2 * 64;
+            while (read_count < v1_pair_count) {
+                // if (1) {
+                //     unsigned long tmp = v2 + read_count;
+                //     print("Send dram read v2 %lu from %lu, v1 %lu, read_count %lu, v1_pair_count %lu, start v2 %lu, graph_size %lu", tmp, graph, v1, read_count, v1_pair_count, v2, graph_size);
+                // }
+                send_dram_read(graph, 3, map_v2_read_ret);
+                graph = graph + 64;
+                read_count = read_count + 1;
+            }
+        }
+
+        // Update counter
+        threashold = threashold - v1_pair_count;
+
+        // If degree == 0, check if cheaching end
+        if (read_count == 0) {
+            if (threashold == 0) {
+                // If reach end, return to  tc__kv_map_return
+                unsigned long ev_word = evw_update_event(CEVNT, js__kv_map_return);
+                send_event(ev_word, v1, v2, IGNRCONT);
+            }
+            else {
+                // Otherwise, read another v1
+                v1 = v1 + 1;
+                v2 = v1 + 1;
+                graph = graph + v1 * 64;
+                send_dram_read(graph, 3, map_v1_read_ret);
+            }
+        }
+
+        yield;
+    }
+
+    event map_v2_read_ret(unsigned long id, unsigned long degree, unsigned long nb_list, unsigned long v2_addr) {
+        read_count = read_count - 1;
+
+        // If v2 degree > 0, send to reduce
+        if (degree > 0) {
+            // print("Dram read v2 %lu, v2_deg %lu, v2_nl %lu, dram addr %lu", id, degree, nb_list, v2_addr);
+            unsigned long ev_word = evw_new(NETID, js__kv_map_emit);
+            unsigned long key = (id << 32) | v1;
+            unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+            send_buffer[0] = key;
+            send_buffer[1] = v1_deg;
+            send_buffer[2] = v1_nl;
+            send_buffer[3] = degree;
+            send_buffer[4] = nb_list;
+            send_event(ev_word, send_buffer, 5, IGNRCONT);
+        }
+
+        // If all v2 read returns, check if reaching end
+        if (read_count == 0) {
+            if (threashold == 0) {
+                // If reach end, return to  tc__kv_map_return
+                unsigned long ev_word = evw_update_event(CEVNT, js__kv_map_return);
+                send_event(ev_word, v1, v2, IGNRCONT);
+            }
+            else {
+                // Otherwise, read another v1
+                v1 = v1 + 1;
+                v2 = v1 + 1;
+                // Read cached graph info
+                unsigned long* local ptr = LMBASE + GRAPH_ADDR_OFFSET;
+                unsigned long* graph = ptr[0];
+                graph = graph + v1 * 64;
+                send_dram_read(graph, 3, map_v1_read_ret);
+            }
+        }
+
+        yield;
+    }
+
+
+    unsigned long saved_cont;
+
+    event kv_reduce (unsigned long v2_v1, unsigned long v1_degree, unsigned long v1_nb_list, unsigned long v2_degree, unsigned long v2_nb_list) {
+
+        // print("start reduce");
+        saved_cont = CCONT;
+        v1 = (v2_v1 << 32) >> 32;
+        v1_deg = v1_degree;
+        v1_nl = v1_nb_list;
+        v2 = v2_v1 >> 32;
+        v2_deg = v2_degree;
+        v2_nl = v2_nb_list;
+
+        unsigned long ev_word = evw_new(NETID, lm_allocator__spmalloc);
+        send_event(ev_word, 24, sp_malloc_ret);
+
+        unsigned long* local ptr = LMBASE + SPMALLOC_OFFSET;
+        unsigned long tmp = ptr[0];
+        // print("Reduce v1 %lu, v1_deg %lu, v1_nl %lu, v2 %lu, v2_deg %lu, v2_nl %lu, cont_word 0x%lx, metadata %lu, X7 %lu", v1, v1_deg, v1_nl, v2, v2_deg, v2_nl, saved_cont, tmp, LMBASE);
+
+        yield;
+    }
+
+
+    event sp_malloc_ret(long unsigned addr, long status) {
+        cached_nb = addr;
+        cached_nb[0] = v1_deg;
+        cached_nb[1] = v1_nl;
+        cached_nb[2] = 0;
+        cached_nb[3] = 0;
+        cached_nb[4] = v2_deg;
+        cached_nb[5] = v2_nl;
+        cached_nb[6] = 0;
+        cached_nb[7] = 0;
+
+        // print("Write v1_nl %lu, v2_nl %lu at %lu", v1_nl, v2_nl, addr);
+        unsigned long ev_word = evw_update_event(CEVNT, js_compute::setup_thread_reg);
+        send_event(ev_word, v1, v2, cached_nb, saved_cont);
+        yield;
+    }
+
+}
+
+
+thread js_compute {
+    unsigned long v1;
+    unsigned long v2;
+    unsigned long loc_js;
+    unsigned long read_count;
+    unsigned long* local cached_nb;
+    // cache_nb = || v1_deg || v1_nb_list || iter_a || offs_a || v2_deg || v2_nb_list || iter_b || offs_b ||
+    // index      || 0      || 1          || 2      || 3      || 4      || 5          || 6      || 7      ||
+    event setup_thread_reg (unsigned long v1_id, unsigned long v2_id, unsigned long spmalloc_ptr) {
+        v1 = v1_id;
+        v2 = v2_id;
+        loc_js = 0;
+        read_count = 0;
+        cached_nb = spmalloc_ptr;
+
+        unsigned long* v1_nl = cached_nb[1];
+        unsigned long* v2_nl = cached_nb[5];
+        // print("Read v1_nl %lu, v2_nl %lu from %lu", v1_nl, v2_nl, cached_nb);
+        send_dram_read(v1_nl, 8, v1_nblist_read_ret);
+        send_dram_read(v2_nl, 8, v2_nblist_read_ret);
+        read_count = 2;
+
+        yield;
+    }
+
+    event v1_nblist_read_ret(long op0, long op1, long op2,long op3,long op4,long op5,long op6, long op7) {
+        // print("v1_nblist_read_ret op0 %lu, op1 %lu, op2 %lu, op3 %lu, op4 %lu, op5 %lu, op6 %lu, op7 %lu", op0, op1, op2, op3, op4, op5, op6, op7);
+        read_count = read_count - 1;
+        unsigned long* local ptr = cached_nb + 8*8;
+        copyOperands(op0, ptr, 8);
+
+        if (read_count == 0) {
+            unsigned long ev_word = evw_update_event(CEVNT, intersect_ab);
+            send_event(ev_word, v1, v2, CCONT);
+        }
+
+        yield;
+    }
+
+    event v2_nblist_read_ret(long op0, long op1, long op2,long op3,long op4,long op5,long op6, long op7) {
+        // print("v2_nblist_read_ret op0 %lu, op1 %lu, op2 %lu, op3 %lu, op4 %lu, op5 %lu, op6 %lu, op7 %lu", op0, op1, op2, op3, op4, op5, op6, op7);
+        read_count = read_count - 1;
+        unsigned long* local ptr = cached_nb + 16*8;
+        copyOperands(op0, ptr, 8);
+
+        if (read_count == 0) {
+            unsigned long ev_word = evw_update_event(CEVNT, intersect_ab);
+            send_event(ev_word, v1, v2, CCONT);
+        }
+
+        yield;
+    }
+
+    event intersect_ab() {
+
+        // print("intersect_ab v1 %lu, v2 %lu, loc_js %lu", v1, v2, loc_js);
+        unsigned long offs_a = cached_nb[3], offs_b = cached_nb[7];
+        unsigned long loc_size_a, loc_size_b;
+        if (1) {
+            unsigned long rem = cached_nb[0] - cached_nb[2];
+            if(rem > 8) { loc_size_a = 8; }
+            else{ loc_size_a = rem; }
+
+            rem = cached_nb[4] - cached_nb[6];
+            if(rem > 8) { loc_size_b = 8; }
+            else{ loc_size_b = rem; }
+        }
+        // print("checkpoint 1");
+        if (1) {
+            unsigned long* local ptr = cached_nb + 8*8;
+            // Walk through the two lists simultaeously
+            while((offs_a < loc_size_a) && (offs_b < loc_size_b)){
+                long elem_a = ptr[offs_a];
+                long elem_b = ptr[offs_b + 8];
+
+                if(elem_a < elem_b){
+                    offs_a = offs_a + 1;
+                }
+                elif(elem_b < elem_a){
+                    offs_b = offs_b + 1;
+                }
+                else{
+                    loc_js = loc_js + 1;
+                    offs_a = offs_a + 1;
+                    offs_b = offs_b + 1;
+                }
+            } 
+        }
+        // print("checkpoint 2");
+
+        // one or both the lists exited --> whichever did fejsh that
+        // update iter by how much ever was processed 
+        // check for bounds and fejsh
+        // retain offs of the other one 
+        unsigned long iter_a = cached_nb[2];
+        if(offs_a == loc_size_a){
+            iter_a = iter_a + loc_size_a;
+            if(iter_a >= cached_nb[0]){
+                unsigned long ev_word = evw_update_event(CEVNT, intersect_term);
+                send_event(ev_word, v1, v2, CCONT);
+                // print("yield 1");
+                yield;
+            }
+        }
+        unsigned long iter_b = cached_nb[6];
+        if(offs_b == loc_size_b){
+            iter_b = iter_b + loc_size_b;
+            if(iter_b >= cached_nb[4]){
+                unsigned long ev_word = evw_update_event(CEVNT, intersect_term);
+                send_event(ev_word, v1, v2, CCONT);
+                // print("yield 2");
+                yield;
+            }
+        }
+
+        // print("checkpoint 3");
+        // If neither lists end yet, read the list that exited
+        if(offs_a == loc_size_a){
+            unsigned long* addr = cached_nb[1] + (iter_a << 3);
+            send_dram_read(addr, 8, v1_nblist_read_ret);
+            offs_a = 0;
+            read_count = read_count + 1;
+        }
+        if(offs_b == loc_size_b){
+            unsigned long* addr = cached_nb[5] + (iter_b << 3);
+            send_dram_read(addr, 8, v2_nblist_read_ret);
+            offs_b = 0;
+            read_count = read_count + 1;
+        }
+
+        // Cache iterators
+        cached_nb[2] = iter_a;
+        cached_nb[3] = offs_a;
+        cached_nb[6] = iter_b;
+        cached_nb[7] = offs_b;
+        yield;
+
+    }
+
+    event intersect_term() {
+        // If intersection count > 0, calculate js entry
+        // print("intersect_term v1 %lu, v2 %lu, loc_js %lu", v1, v2, loc_js);
+        if (loc_js > 0){
+            unsigned long v1_deg = cached_nb[0];
+            unsigned long v2_deg = cached_nb[4];
+            double tmp0 = loc_js;
+            double tmp1 = v1_deg + v2_deg - loc_js;
+            double js_entry = tmp0/tmp1;
+            unsigned long* local ptr = LMBASE + LOCAL_JS_ENTRY_COUNT_OFFSET;
+            ptr[0] = ptr[0] + 1;
+
+#ifdef PRINT_EDGE_RESULT
+            print("%u-%u: %lx, v2_deg: %lu, v2_deg: %lu, intersect_count: %lu.", v1, v2, js_entry, v1_deg, v2_deg, loc_js);
+#endif
+        }
+
+        // Spfree
+        unsigned long ev_word = evw_new(NETID, lm_allocator__spfree);
+        unsigned long cont_word = evw_new(NETID, sp_free_ret);
+        send_event(ev_word, cached_nb, cont_word);
+        // print("Reduce term: send spfree to 0x%lx, cont 0x%lx", ev_word, cont_word);
+
+        // Return to js__kv_reduce_return
+        ev_word = evw_update_event(CEVNT, js__kv_reduce_return);
+        send_event(ev_word, v1, v2, CCONT);
+        // print("Reduce term: send js__kv_reduce_return to 0x%lx, cont 0x%lx", ev_word, CCONT);
+
+        yield;
+    }
+
+    event sp_free_ret() {
+        yield_terminate;
+    }
+
+}
+
+thread main {
+    unsigned long cached_num_lanes;
+    event init (unsigned long partitions, unsigned long partition_per_lane, unsigned long num_lanes, unsigned long input,
+        unsigned long input_size, unsigned long graph, unsigned long v_count, unsigned long intermediate_hashmap) {
+        
+        unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+        unsigned long* local heap = LMBASE + HEAP_OFFSET;
+
+        unsigned long ev_word = evw_new(NETID, js_broadcast__broadcast_global);
+        unsigned long tmp_ev_word = evw_new(NETID, main_broadcast_init::setup_spd);
+        send_buffer[0] = num_lanes;
+        send_buffer[1] = tmp_ev_word;
+        send_buffer[2] = graph;
+        send_buffer[3] = v_count;
+        // print("broadcast v_count %lu", v_count);
+        send_event(ev_word, send_buffer, 8, CEVNT);
+
+        send_buffer[0] = partitions;
+        send_buffer[1] = partition_per_lane;
+        send_buffer[2] = num_lanes;
+        heap[0] = input;
+        heap[1] = input_size;
+        send_buffer[3] = heap;
+        heap = heap + 2 * 8;
+        heap[0] = intermediate_hashmap;
+        send_buffer[4] = heap;
+
+        ev_word = evw_new(NETID, js__map_shuffle_reduce);
+        send_event(ev_word, send_buffer, 8, combine_js);
+
+        cached_num_lanes = num_lanes;
+        yield;
+    }
+
+    event combine_js(unsigned long num_reduce) {
+        print("UDKVMSR finished, executed %lu reduce tasks.", num_reduce);
+        asm {"perflog 1 0 'UDKVMSR finished'" };
+        // unsigned long tmp = 0;
+        // unsigned long ev_word = evw_new(NETID, js_accumulate__init_global_snyc);
+        // send_event(ev_word, cached_num_lanes, tmp, term);
+
+        unsigned long* local ptr = LMBASE + TEST_TOP_OFFSET;
+        ptr[0] = TEST_TOP_FLAG;
+        yield_terminate;
+    }
+
+    event term (unsigned long js_count) {
+        print("Total js nonzero count: %lu", js_count);
+        asm {"perflog 1 0 'JS finished'" };
+        unsigned long* local ptr = LMBASE + TEST_TOP_OFFSET;
+        ptr[0] = TEST_TOP_FLAG;
+        print("Set test flag TEST_TOP_FLAG at offset TEST_TOP_OFFSET.");
+        yield_terminate;
+    }
+}
+
+thread main_broadcast_init {
+    event setup_spd (unsigned long graph, unsigned long v_count) {
+        unsigned long* local ptr = LMBASE + SPMALLOC_OFFSET;
+        ptr[0] = HEAP_OFFSET;
+        ptr = LMBASE + GRAPH_ADDR_OFFSET;
+        ptr[0] = graph;
+        ptr = LMBASE + GRAPH_SIZE_OFFSET;
+        ptr[0] = v_count;
+        // print("write graph_size %lu at %lu", v_count, ptr);
+        yield_terminate;
+    }
+}
+

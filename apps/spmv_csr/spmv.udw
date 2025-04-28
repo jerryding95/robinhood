@@ -1,0 +1,771 @@
+// This program performs matrix-matrix multiplication. It makes the assumption that the scratchpad space is
+// sufficient for 8 columns of the right-hand-side matrix. It targets one UD.
+
+#define FLAG_OFFSET 65528
+#define SEND_BUFFER 64
+
+#define PART_PER_LANE 32
+#define ROW_BATCH 32
+
+#define DEBUG_PRINT 0
+#define ENABLE_PERFLOG 0
+
+
+// Scratchpad Space
+// 0  -  8 offset_addr
+// 8  - 16 mat_height
+// 16 - 24 matval_addr
+// 24 - 32 matcol_addr
+// 32 - 40 vec_addr
+// 40 - 48 res_vec_addr
+// 48 - 56 part_array
+// 56 - 64 num_workers
+
+extern event spmv__map_shuffle_reduce();
+extern event spmv__kv_map_return();
+
+
+thread matvecmul_master{
+    long counter;
+
+    event mv_init(long mat_height, long unsigned offset_addr, long unsigned matval_addr, long unsigned matcol_addr, long unsigned vec_addr, long unsigned res_vec_addr, long part_array_addr, long num_workers) {
+        long unsigned* local sp_ptr = LMBASE;
+        long unsigned* local send_ptr;
+        int nwid;
+        long evword, cont_word, i, tmp;
+
+        asm {
+                "perflog 1 0 '[NWID %d] SPMV Start' {'X0'}"
+        };
+
+        copyOperands(mat_height, sp_ptr, 8);
+
+        evword = evw_new(NETID, lane_manager::cache_metadata);
+        cont_word = evw_update_event(CEVNT, cache_metadata_return);
+
+        if(num_workers == 1){
+            send_ptr = LMBASE + SEND_BUFFER;
+            if(DEBUG_PRINT){
+                print("Finished caching metadata, launching workers");
+            }
+            tmp = sp_ptr[6];
+            send_ptr[0] = tmp; // partition array address
+            
+            tmp = PART_PER_LANE;
+            send_ptr[1] = tmp;
+
+            tmp = sp_ptr[7];
+            send_ptr[2] = tmp; // number of workers
+
+            send_ptr[3] = sp_ptr;
+
+            evword = evw_new(NETID, spmv__map_shuffle_reduce);
+            cont_word = evw_update_event(CEVNT, spmv_term);
+
+            send_event(evword, send_ptr, 4, cont_word);
+            yield;
+        }
+
+        nwid = NETID;
+
+        for(i = 1; i < num_workers; i = i + 1){
+            nwid = nwid + 1;
+            evword = evw_update_netid(evword, nwid);
+            send_event(evword, sp_ptr, 6, cont_word);
+        }
+
+        counter = num_workers - 1;
+
+        yield;
+    }
+
+
+    event cache_metadata_return(){
+        long evword, tmp, cont_word;
+        long unsigned* local sp_ptr = LMBASE;
+        long unsigned* local send_ptr = LMBASE + SEND_BUFFER;
+        counter = counter - 1;
+        if(DEBUG_PRINT){
+            print("Waiting for %ld lanes", counter);
+        }
+
+        if(counter == 0){
+            if(DEBUG_PRINT){
+                print("Finished caching metadata, launching workers");
+            }
+            tmp = sp_ptr[6];
+            send_ptr[0] = tmp; // partition array address
+            
+            tmp = PART_PER_LANE;
+            send_ptr[1] = tmp;
+
+            tmp = sp_ptr[7];
+            send_ptr[2] = tmp; // number of workers
+
+            send_ptr[3] = sp_ptr;
+
+            evword = evw_new(NETID, spmv__map_shuffle_reduce);
+            cont_word = evw_update_event(CEVNT, spmv_term);
+
+            send_event(evword, send_ptr, 4, cont_word);
+            
+            asm {
+                "perflog 1 0 '[NWID %d] Launch KVMSR' {'X0'}"
+            };
+        
+
+        }
+        yield;
+    }
+
+    
+    event spmv_term(){
+        long* local sp_ptr = LMBASE + FLAG_OFFSET;
+        asm {
+            "perflog 1 0 '[NWID %d] KVMSR Return' {'X0'}"
+        };
+        sp_ptr[0] = 1;
+
+        yield_terminate;
+
+    }
+    
+
+}
+
+// 64  - 72  number of non-zeros
+// 72  - 80  value_addr_base
+// 80  - 88  col_addr_base
+// 88  - 96  cache_offset
+// 88  - 96  row_idx
+
+thread lane_manager{
+    
+
+    event cache_metadata(long mat_height, long unsigned offset_addr, long unsigned matval_addr, long unsigned matcol_addr, long unsigned vec_addr, long unsigned res_vec_addr){
+        long* local sp_ptr = LMBASE;
+
+        copyOperands(mat_height, sp_ptr, 6);
+
+        send_event(CCONT, CCONT);
+        yield_terminate;
+
+    }
+    
+}
+
+thread spmv{
+    long counter, complete_count, nnz, row_idx;
+    long cont_word;
+    double accum;
+    long* curr_col_addr;
+    long* curr_val_addr;
+
+    /*
+    This event launches new reads of the row data (entry point of map task)
+    */
+
+    event kv_map(long start_offset, long end_offset, long addr){
+        long unsigned* local sp_ptr = LMBASE;
+        long* res_addr;
+        long evword, tmp;
+
+
+        tmp = sp_ptr[0]; // base address of offset array
+        tmp = addr - tmp;
+        row_idx = tmp >> 4; // offset / (16 bytes/pair)
+
+        if(DEBUG_PRINT){
+            print("Starting to work on row %ld", row_idx);
+        }
+
+        if(ENABLE_PERFLOG){
+            asm {
+                "perflog 1 0 '[NWID %d] Starting to work on row %ld' {'X0'} {'%[src]'} "
+            } : [src] "r" (row_idx);
+        }
+
+        tmp = end_offset - start_offset;
+        tmp = tmp >> 3;
+        nnz = tmp;
+        // Get the number of non-zeros
+
+        if(tmp == 0){
+            if(DEBUG_PRINT){
+                print("Received empty row, return directly");
+            }
+            
+            res_addr = sp_ptr[5];
+            tmp = row_idx << 3;
+
+            res_addr = res_addr + tmp;
+            accum = 0;
+            evword = evw_update_event(CEVNT, spmv__kv_map_return);
+            send_dram_write(res_addr, accum, evword);
+            yield;
+        }
+        // The row is empty, return to master
+
+        curr_val_addr = sp_ptr[2];
+        curr_val_addr = curr_val_addr + start_offset;
+        // Address to start fetching matrix values
+
+        curr_col_addr = sp_ptr[3];
+        curr_col_addr = curr_col_addr + start_offset;
+        //  Address to start fetching column indices
+
+        cont_word = CCONT;
+
+        complete_count = 0;
+        accum = 0;
+
+        evword = evw_update_event(CEVNT, launch_strip);
+        send_event(evword, evword);
+        // Start caching data
+
+        yield;
+    }
+
+
+    event launch_strip(){
+        long unsigned* local sp_ptr = LMBASE;
+        long batch_size, i, evword, cont;
+
+        batch_size = nnz - complete_count;
+
+        if(batch_size > ROW_BATCH){
+            batch_size = ROW_BATCH;
+        }
+
+        evword = evw_new(NETID, strip_worker::launch_strip);
+        cont = evw_update_event(CEVNT, strip_worker_return);
+
+        for(i = batch_size; i >= 8 ; i = i - 8){
+            send_event(evword, curr_col_addr, curr_val_addr, cont);
+            curr_val_addr = curr_val_addr + 64;
+            curr_col_addr = curr_col_addr + 64;
+        }
+
+        if(i > 0){
+            evword = evw_new(NETID, partial_strip_worker::launch_strip);
+            send_event(evword, curr_col_addr, curr_val_addr, i, cont);
+        }
+
+        counter = batch_size + 7;
+        counter = counter >> 3;
+        // Cache the matrix values
+        if(DEBUG_PRINT){
+            print("Creates %ld cache requests", counter);
+        }
+
+        complete_count = complete_count + batch_size;
+
+        yield;
+    }
+
+
+    event strip_worker_return(double partial_val){
+        long* local sp_ptr = LMBASE;
+        long evword;
+        long tmp;
+
+        counter = counter - 1;
+        accum = accum + partial_val;
+
+        if(DEBUG_PRINT){
+            print("A compute worker returns with partial_val=%lx", partial_val);
+        }
+
+        if(ENABLE_PERFLOG){
+            asm {
+                "perflog 1 0 '[NWID %d] Row %ld received strip worker return' {'X0'} {'%[src]'} "
+            } : [src] "r" (row_idx);
+        }
+
+        if(complete_count >= nnz){
+            if(counter == 0){
+                evword = evw_update_event(CEVNT, stream_complete);
+                send_event(evword, evword);
+                yield; 
+                // All the elements have been processed
+            }
+            yield;
+        }
+
+        tmp = nnz - complete_count;
+        if(tmp >=8){
+            evword = evw_new(NETID, strip_worker::launch_strip);
+            
+            send_event(evword, curr_col_addr, curr_val_addr, CEVNT);
+            curr_val_addr = curr_val_addr + 64;
+            curr_col_addr = curr_col_addr + 64;
+
+        }
+        else{
+            evword = evw_new(NETID, partial_strip_worker::launch_strip);
+            
+            send_event(evword, curr_col_addr, curr_val_addr, tmp, CEVNT);
+            curr_val_addr = curr_val_addr + 64;
+            curr_col_addr = curr_col_addr + 64;
+        }
+        
+
+        counter = counter + 1;
+        complete_count = complete_count + 8;
+        // Launch new thread if necessary
+
+
+        if(DEBUG_PRINT){
+            print("Launching another set of strips");
+        }
+        // Launch more computation using existing cache data
+        
+        yield;
+
+    }
+
+
+    event stream_complete(){
+        long* res_addr; 
+        long unsigned* local sp_ptr = LMBASE;
+        long tmp, evword;
+
+        res_addr = sp_ptr[5];
+        tmp = row_idx << 3;
+
+        res_addr = res_addr + tmp;
+        evword = evw_update_event(CEVNT, spmv__kv_map_return);
+
+        send_dram_write(res_addr, accum, evword);
+        // Writing the row data back
+
+        yield;
+    }
+
+}
+
+thread strip_worker{
+    long cont;
+    long* col_addr;
+    double v0, v1, v2, v3, v4, v5, v6, v7, accum;
+
+    event launch_strip(long unsigned caddr, long* val_addr){
+        long evword;
+
+        evword = evw_update_event(CEVNT, matval_return);
+        send_dram_read(val_addr, 8, evword);
+
+        cont = CCONT;
+        col_addr = caddr;
+        accum = 0;
+
+        if(DEBUG_PRINT){
+            print("Launching a strip at val_addr = %lx", val_addr);
+        }
+
+        if(ENABLE_PERFLOG){
+            asm {
+                "perflog 1 0 '[NWID %d] [EVWORD %ld] Received matrix values for cont = %lx' {'X0'} {'X2'} {'%[src]'} "
+            } : [src] "r" (cont);
+        }
+
+        yield;
+    }
+
+    event matval_return(double op0, double op1, double op2, double op3, double op4, double op5, double op6, double op7, long op8){
+        long evword;
+
+        evword = evw_update_event(CEVNT, matcol_return);
+        send_dram_read(col_addr, 8, evword);
+
+        v0 = op0;
+        v1 = op1;
+        v2 = op2;
+        v3 = op3;
+        v4 = op4;
+        v5 = op5;
+        v6 = op6;
+        v7 = op7;
+
+        if(ENABLE_PERFLOG){
+            asm {
+                "perflog 1 0 '[NWID %d] [EVWORD %ld] Received matrix values for cont = %lx' {'X0'} {'X2'} {'%[src]'} "
+            } : [src] "r" (cont);
+        }
+
+        yield;
+    }
+
+    event matcol_return(long unsigned op0, long unsigned op1, long unsigned op2, long unsigned op3, long unsigned op4, long unsigned op5, long unsigned op6, long unsigned op7, long op8){
+        long evword;
+        long unsigned vec_base;
+        long* vec_addr;
+        long unsigned* local sp_ptr = LMBASE;
+
+        vec_base = sp_ptr[4]; // Vector's base address
+
+        vec_addr = op0 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele0);
+        send_dram_read(vec_addr, 1, evword);
+
+        vec_addr = op1 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele1);
+        send_dram_read(vec_addr, 1, evword);
+
+        vec_addr = op2 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele2);
+        send_dram_read(vec_addr, 1, evword);
+
+        vec_addr = op3 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele3);
+        send_dram_read(vec_addr, 1, evword);
+
+        vec_addr = op4 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele4);
+        send_dram_read(vec_addr, 1, evword);
+
+        vec_addr = op5 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele5);
+        send_dram_read(vec_addr, 1, evword);
+
+        vec_addr = op6 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele6);
+        send_dram_read(vec_addr, 1, evword);
+
+        vec_addr = op7 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele7);
+        send_dram_read(vec_addr, 1, evword);
+
+        col_addr = 8;
+
+        if(ENABLE_PERFLOG){
+            asm {
+                "perflog 1 0 '[NWID %d] [TID %ld] Received matrix columns for cont = %lx' {'X0'} {'%[t]'} {'%[src]'} "
+            } : [t] "r" (TID), [src] "r" (cont);
+        }
+
+        yield;
+    }
+
+    event fetch_ele0(double val0){
+        accum = accum + v0 * val0;
+
+        col_addr = col_addr - 1;
+
+        if(ENABLE_PERFLOG){
+            asm {
+                "perflog 1 0 '[NWID %d] [TID %ld] Received first vector value for cont = %lx' {'X0'} {'%[t]'} {'%[src]'} "
+            } : [t] "r" (TID), [src] "r" (cont);
+        }
+
+        if(col_addr == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele1(double val1){
+         accum = accum + v1 * val1;
+
+        col_addr = col_addr - 1;
+
+        if(col_addr == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele2(double val2){
+        accum = accum + v2 * val2;
+
+        col_addr = col_addr - 1;
+
+        if(col_addr == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele3(double val3){
+        accum = accum + v3 * val3;
+
+        col_addr = col_addr - 1;
+
+        if(col_addr == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele4(double val4){
+        accum = accum + v4 * val4;
+
+        col_addr = col_addr - 1;
+
+        if(ENABLE_PERFLOG){
+            asm {
+                "perflog 1 0 '[NWID %d] [TID %ld] Received 5th vector value for cont = %lx' {'X0'} {'%[t]'} {'%[src]'} "
+            } : [t] "r" (TID), [src] "r" (cont);
+        }
+
+        if(col_addr == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele5(double val5){
+        accum = accum + v5 * val5;
+
+        col_addr = col_addr - 1;
+
+        if(col_addr == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele6(double val6){
+        accum = accum + v6 * val6;
+
+        col_addr = col_addr - 1;
+
+        if(col_addr == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele7(double val7){
+        accum = accum + v7 * val7;
+
+        col_addr = col_addr - 1;
+
+        if(ENABLE_PERFLOG){
+            asm {
+                "perflog 1 0 '[NWID %d] [TID %ld] Received 8th vector value for cont = %lx' {'X0'} {'%[t]'} {'%[src]'} "
+            } : [t] "r" (TID), [src] "r" (cont);
+        }
+
+        if(col_addr == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+}
+
+thread partial_strip_worker{
+    long cont;
+    long counter;
+    long* col_addr;
+    double v0, v1, v2, v3, v4, v5, v6, accum;
+
+    event launch_strip(long unsigned caddr, long* val_addr, long c){
+        long evword;
+
+        evword = evw_update_event(CEVNT, matval_return);
+        send_dram_read(val_addr, 8, evword);
+
+        cont = CCONT;
+        col_addr = caddr;
+        accum = 0;
+        counter = c;
+
+        if(DEBUG_PRINT){
+            print("Launching a partial strip of size %ld at val_addr = %lx", c, val_addr);
+        }
+
+        yield;
+    }
+
+    event matval_return(double op0, double op1, double op2, double op3, double op4, double op5, double op6, double op7, long op8){
+        long evword;
+
+        evword = evw_update_event(CEVNT, matcol_return);
+        send_dram_read(col_addr, 8, evword);
+
+        v0 = op0;
+        v1 = op1;
+        v2 = op2;
+        v3 = op3;
+        v4 = op4;
+        v5 = op5;
+        v6 = op6;
+
+        yield;
+    }
+
+    event matcol_return(long unsigned op0, long unsigned op1, long unsigned op2, long unsigned op3, long unsigned op4, long unsigned op5, long unsigned op6, long unsigned op7, long op8){
+        long evword;
+        long unsigned vec_base;
+        long* vec_addr;
+        long unsigned* local sp_ptr = LMBASE;
+
+        vec_base = sp_ptr[4]; // Vector's base address
+
+        vec_addr = op0 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele0);
+        send_dram_read(vec_addr, 1, evword);
+
+
+        if(counter == 1){
+            yield;
+        }
+        
+        vec_addr = op1 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele1);
+        send_dram_read(vec_addr, 1, evword);
+
+        if(counter == 2){
+            yield;
+        }
+        
+        vec_addr = op2 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele2);
+        send_dram_read(vec_addr, 1, evword);
+
+        if(counter == 3){
+            yield;
+        }
+
+        vec_addr = op3 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele3);
+        send_dram_read(vec_addr, 1, evword);
+
+        if(counter == 4){
+            yield;
+        }
+
+
+        vec_addr = op4 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele4);
+        send_dram_read(vec_addr, 1, evword);
+
+        if(counter == 5){
+            yield;
+        }
+
+        vec_addr = op5 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele5);
+        send_dram_read(vec_addr, 1, evword);
+
+        if(counter == 6){
+            yield;
+        }
+
+        vec_addr = op6 << 3;
+        vec_addr = vec_addr + vec_base;
+        evword = evw_update_event(CEVNT, fetch_ele6);
+        send_dram_read(vec_addr, 1, evword);
+
+        yield;
+    }
+
+    event fetch_ele0(double val0){
+        accum = accum + v0 * val0;
+
+        counter = counter - 1;
+
+        if(counter == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele1(double val1){
+         accum = accum + v1 * val1;
+
+        counter = counter - 1;
+
+        if(counter == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele2(double val2){
+        accum = accum + v2 * val2;
+
+        counter = counter - 1;
+
+        if(counter == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele3(double val3){
+        accum = accum + v3 * val3;
+
+        counter = counter - 1;
+
+        if(counter == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele4(double val4){
+        accum = accum + v4 * val4;
+
+        counter = counter - 1;
+
+        if(counter == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele5(double val5){
+        accum = accum + v5 * val5;
+
+        counter = counter - 1;
+
+        if(counter == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+
+    event fetch_ele6(double val6){
+        accum = accum + v6 * val6;
+
+        counter = counter - 1;
+
+        if(counter == 0){
+            send_event(cont, accum, cont);
+            yield_terminate;
+        }
+        yield;
+    }
+}
+
+

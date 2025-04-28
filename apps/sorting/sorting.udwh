@@ -1,0 +1,70 @@
+#ifndef __SORTING_DEF_UDWH__
+#define __SORTING_DEF_UDWH__
+
+extern event DistributedSortBroadcast__broadcast_global();
+extern event ParallelPrefixBroadcast__broadcast_global();
+
+extern event DistributedSortPhase1::map_shuffle_reduce();
+extern event DistributedSortPhase1::kv_map_emit();
+extern event DistributedSortPhase1::kv_map_return();
+extern event DistributedSortPhase1::kv_combine();
+extern event DistributedSortPhase1::kv_reduce_return();
+
+
+extern event DistributedSortPhase1Insertion::map_shuffle_reduce();
+extern event DistributedSortPhase1Insertion::kv_map_emit();
+extern event DistributedSortPhase1Insertion::kv_map_return();
+extern event DistributedSortPhase1Insertion::kv_combine();
+extern event DistributedSortPhase1Insertion::kv_reduce_return();
+
+
+extern event DistributedSortPhase1InsertionLb::map_shuffle_reduce();
+extern event DistributedSortPhase1InsertionLb::kv_map_emit();
+extern event DistributedSortPhase1InsertionLb::kv_map_return();
+extern event DistributedSortPhase1InsertionLb::kv_combine();
+extern event DistributedSortPhase1InsertionLb::kv_reduce_return();
+
+
+extern event phase1_bin_size_cache::cache_init();
+extern event phase1_bin_size_cache::cache_get();
+extern event phase1_bin_size_cache::cache_combine_value();
+extern event phase1_bin_size_cache::cache_flush();
+
+
+extern event DistributedSortPhase2::map_shuffle_reduce();
+extern event DistributedSortPhase2::kv_map_emit();
+extern event DistributedSortPhase2::kv_map_return();
+extern event DistributedSortPhase2::kv_combine();
+extern event DistributedSortPhase2::kv_reduce_return();
+
+extern event DistributedSortPhase2Lb::map_shuffle_reduce();
+extern event DistributedSortPhase2Lb::kv_map_emit();
+extern event DistributedSortPhase2Lb::kv_map_return();
+extern event DistributedSortPhase2Lb::kv_combine();
+extern event DistributedSortPhase2Lb::kv_reduce_return();
+
+
+extern event DistributedSortPhase2Mapper::map_shuffle_reduce();
+extern event DistributedSortPhase2Mapper::kv_map_emit();
+extern event DistributedSortPhase2Mapper::kv_map_return();
+extern event DistributedSortPhase2Mapper::kv_combine();
+extern event DistributedSortPhase2Mapper::kv_reduce_return();
+
+
+extern event DistributedSortPhase2MapperLb::map_shuffle_reduce();
+extern event DistributedSortPhase2MapperLb::kv_map_emit();
+extern event DistributedSortPhase2MapperLb::kv_map_return();
+extern event DistributedSortPhase2MapperLb::kv_combine();
+extern event DistributedSortPhase2MapperLb::kv_reduce_return();
+
+extern event DistributedSortPhase2LocalSort::init();
+extern event DistributedSortPhase2LocalSortDRAM::init();
+
+extern event DistributedSortPhase3::map_shuffle_reduce();
+extern event DistributedSortPhase3::kv_map_emit();
+extern event DistributedSortPhase3::kv_map_return();
+extern event DistributedSortPhase3::kv_combine();
+extern event DistributedSortPhase3::kv_reduce_return();
+
+
+#endif

@@ -1,0 +1,2891 @@
+
+asm native {"
+  from libraries.UDMapShuffleReduce.linkable.LinkableKVMapShuffleReduceTPL import UDKeyValueMapShuffleReduceTemplate
+  from libraries.UDMapShuffleReduce.utils.OneDimArrayKeyValueSet import OneDimKeyValueSet
+  from libraries.UDMapShuffleReduce.utils.IntermediateKeyValueSet import IntermediateKeyValueSet
+
+  from LinkableGlobalSync import Broadcast
+  Broadcast(state=state0, identifier='DistributedSortBroadcast', debug_flag=False)
+  
+
+  from LinkableGlobalSync import Broadcast
+  Broadcast(state=state0, identifier='ParallelPrefixBroadcast', debug_flag=False)
+  
+
+"};
+
+//   from libraries.UDMapShuffleReduce.linkable.LinkableGlobalSync import Broadcast
+  
+//   init_broadcast = Broadcast(state0, 'DistributedSortBroadcast', False)
+//   init_broadcast.gen_broadcast()
+
+#include "LMStaticMap.udwh"
+#include "sorting.udwh"
+
+// Memory layout
+// 16 words for per-lane variables
+#define SORT_OFFSET 20000
+#define BIN_FACTOR 10
+
+#define LIST_SIZE 0
+#define LIST_ADDR 1
+#define TMP_ADDR 2
+#define NUM_LANES 3
+#define NUM_BINS 4
+#define USE_UNIQUE 5
+#define MAX_VALUE 6
+#define BIN_SIZE 7
+#define BKSIZE 8
+#define BINS_PER_LANE 9
+#define DRAM_BLOCK_SIZE 10
+#define BIN_SIZE_START 11
+#define BIN_TMP_ADDR 12
+#define BASE_LANE 13
+#define LANE_SPACE_BITMAP 14
+#define OUT_CNT 15
+#define LB_TMP_ADDR 16
+
+#define VAR_SIZE 256
+#define COUNTERS_OFFSET 256
+
+// #define VAR_SIZE 128
+// #define COUNTERS_OFFSET 128
+#define SP_BLOCKSIZE 6000
+
+#define NWAIT_EMPTY 1024
+
+
+#define REDUCE_BINSORT
+
+// #define INSERTION
+#define DEBUG
+
+#define PBLOCKSIZE 4096
+
+// exclusive scan
+thread ParallelPrefix {
+	long tot, cur;
+	unsigned long offset_buffer, offset_vec;
+	event prefix(long* list_addr, long list_size, long num_lanes, long offset_buffer_in, long offset_vec_in) {
+		print("PP input: %lu %lu %lu %lu %lu", list_addr, list_size, num_lanes, offset_buffer_in, offset_vec_in);
+		offset_buffer = offset_buffer_in;
+		offset_vec = offset_vec_in;
+		unsigned long* local sp_ptr = LMBASE + offset_buffer;
+		unsigned long* local vec_ptr = LMBASE + offset_vec;
+		print("offset = %d", offset_vec);
+
+		// print("num_lanes = %d", num_lanes);
+#ifdef DEBUG
+		print("prallel prefix start");
+#endif
+		// print("list_size = %d", list_size);
+		tot = 0;
+		unsigned long* local cur_addr = list_addr;
+		unsigned long cur_size = list_size;
+		
+		while(cur_size > 1) {
+			// send_dram_read(cur_addr, PBLOCKSIZE, prefix_load_ret);
+			vec_ptr[tot * 2] = cur_addr;
+			vec_ptr[tot * 2 + 1] = cur_size;
+			// print("cur_size = %d", cur_size);
+			cur_addr = cur_addr + cur_size * 8;
+			cur_size = (cur_size + PBLOCKSIZE - 1) / PBLOCKSIZE;
+			// print("cur_size = %d", cur_size);
+
+			tot = tot + 1;
+		}
+	
+		
+		cur = 0;
+		long ev_word = evw_update_event(CEVNT, preifx_forward_for);
+		send_event(ev_word, 0, IGNRCONT);
+		// long* local sp_ptr = LMBASE + SORT_OFFSET;
+		// sp_ptr[LIST_SIZE] = list_size;
+		// sp_ptr[LIST_ADDR] = list_addr;
+		// sp_ptr[TMP_ADDR] = tmp_addr;
+		// send_event(CCONT, 0, IGNRCONT);
+		// yield_terminate;
+	}
+
+	event preifx_forward_for() {
+		print("forward loop, cur = %d, tot = %d", cur, tot);
+		if(cur == tot) {
+			long evword = evw_update_event(CEVNT, preifx_backward_for);
+			send_event(evword, 0, IGNRCONT);
+		} else {
+			// launch broadcast to calculate prefix of each block in vec_ptr[tot * 2], vector_ptr[tot * 2 + 1]
+			unsigned long* local vec_ptr = LMBASE + offset_vec;
+			if (1) {
+			print("%d %d %d %d", vec_ptr[0], vec_ptr[1], vec_ptr[2], vec_ptr[3]);
+
+			}
+			long nvals = vec_ptr[cur * 2 + 1];
+			print("nvals = %d", nvals);
+
+			long n_lanes = (nvals + PBLOCKSIZE - 1) / PBLOCKSIZE;
+
+			print("offset = %d %d", offset_vec, PBLOCKSIZE);
+
+			// print("xx: %d", vec_ptr[cur * 2 + 1]);
+			print("n_lanes = %d", n_lanes);
+	
+
+			long evword, label, cont_word;
+			long* local sp_ptr;
+			
+			evword = evw_new(NETID, DistributedSortBroadcast__broadcast_global);
+			label = 0;
+			label = evw_update_event(label, ParallelPrefixPerLane::prefix_forward_per_lane);
+			// cont_word = evw_update_event(CEVNT, end_prefix);
+
+			sp_ptr = LMBASE + SEND_BUFFER_OFFSET;
+
+			sp_ptr[0] = n_lanes;
+			sp_ptr[1] = label;
+			sp_ptr[2] = NETID;
+			sp_ptr[3] = vec_ptr[cur * 2];
+			sp_ptr[4] = vec_ptr[cur * 2 + 1];
+			sp_ptr[5] = 0;
+			sp_ptr[6] = 0;
+			sp_ptr[7] = offset_buffer;
+			if(cur + 1 < tot) {
+				sp_ptr[5] = vec_ptr[(cur + 1) * 2];
+				sp_ptr[6] = vec_ptr[(cur + 1) * 2 + 1];
+			}
+
+
+			send_event(evword, sp_ptr, 8, preifx_forward_for);
+			cur = cur + 1;
+		}
+	}
+
+
+
+	event preifx_backward_for() {
+		print("backward loop, cur = %d, tot = %d", cur, tot);
+
+		cur = cur - 1;
+		// print("in preifx_backward_for, cur = %d", cur);
+		if(cur == 0) {
+			long evword = evw_update_event(CEVNT, end_prefix);
+			send_event(evword, 0, IGNRCONT);
+		} else {
+			unsigned long* local vec_ptr = LMBASE + offset_vec;
+			long n_lanes = vec_ptr[(cur) * 2 + 1];
+			// print("n_lanes = %d", n_lanes);
+	
+
+			long evword, label, cont_word;
+			long* local sp_ptr;
+			
+			evword = evw_new(NETID, DistributedSortBroadcast__broadcast_global);
+			label = 0;
+			label = evw_update_event(label, ParallelPrefixPerLane::prefix_backward_per_lane);
+			cont_word = evw_update_event(CEVNT, end_prefix);
+
+			sp_ptr = LMBASE + SEND_BUFFER_OFFSET;
+
+			sp_ptr[0] = n_lanes;
+			sp_ptr[1] = label;
+			sp_ptr[2] = NETID;
+			sp_ptr[3] = vec_ptr[(cur - 1) * 2];
+			sp_ptr[4] = vec_ptr[(cur - 1) * 2 + 1];
+			sp_ptr[5] = vec_ptr[(cur) * 2];
+			sp_ptr[6] = vec_ptr[(cur) * 2 + 1];
+			sp_ptr[7] = offset_buffer;
+
+			send_event(evword, sp_ptr, 8, preifx_backward_for);
+		}
+	}
+
+	event end_prefix() {
+#ifdef DEBUG
+		print("end_prefix");
+#endif
+		send_event(CCONT, 0, IGNRCONT);
+		yield_terminate;
+	}
+
+}
+
+thread MemRequest {
+	// implement dram read/write with a limit on the number of outstanding requests
+}
+
+#define IO_V1
+#define OUT_LIMIT 10000000
+
+thread MemcpyLib {
+	// let this thread handle all memory copy operations
+	// and we can limit outstanding loads here
+
+	unsigned long cnt, offset, cur_idx;
+	unsigned long curaddr, tot, curto;
+
+	event memcpy_dram_to_sp(unsigned long src, unsigned long dst, unsigned long size_in) {
+		if (size_in == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+		offset = dst - src;
+		tot = size_in;
+		curaddr = src;
+
+		cnt = 0;
+		cur_idx = 0;
+		
+		unsigned long evw = evw_update_event(CEVNT, memcpy_dram_to_sp_loop);
+		send_event(evw, 0, IGNRCONT);
+		yield;
+		
+	}
+
+	event memcpy_dram_to_sp_loop() {
+		unsigned long *local sp_ptr = LMBASE + SORT_OFFSET;
+		unsigned long out_cnt = sp_ptr[OUT_CNT];
+		while(out_cnt < OUT_LIMIT && cur_idx < tot) {
+			unsigned long * local addr = curaddr;
+			if(cur_idx + 8 <= tot) {
+				// print("sending 8");
+				send_dram_read(addr, 8, memcpy_dram_to_sp_ret8);
+				curaddr = curaddr + 64;
+				cnt = cnt + 8;
+				cur_idx = cur_idx + 8;
+				out_cnt = out_cnt + 1;
+			} else {
+				// print("sending 1");
+				send_dram_read(addr, 1, memcpy_dram_to_sp_ret);
+				curaddr = curaddr + 8;
+				cnt = cnt + 1;
+				cur_idx = cur_idx + 1;
+				out_cnt = out_cnt + 1;
+			}
+		}
+		// print("after sending: out_cnt = %d", out_cnt);
+
+		sp_ptr[OUT_CNT] = out_cnt;
+		if(cur_idx < tot) {
+			unsigned long evw = evw_update_event(CEVNT, memcpy_dram_to_sp_loop);
+			send_event(evw, 0, IGNRCONT);
+			yield;
+		}
+	}
+
+
+	event memcpy_dram_to_sp_ret(unsigned long val, unsigned long addr) {
+				// copyOperands(op0, lmbase, 8); ???
+		// print("getting %lu", val);
+
+		unsigned long *local sp_ptr = LMBASE + SORT_OFFSET;
+		sp_ptr[OUT_CNT] = sp_ptr[OUT_CNT] - 1;
+		unsigned long *local lm_ptr = addr + offset;
+		*lm_ptr = val;
+		cnt = cnt - 1;
+
+
+		if(cur_idx == tot && cnt == 0) {
+			// print("sending back");
+
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+	event memcpy_dram_to_sp_ret8(unsigned long op1, unsigned long op2, 
+			unsigned long op3, unsigned long op4, 
+			unsigned long op5, unsigned long op6, 
+			unsigned long op7, unsigned long op8, 
+			unsigned long addr) {
+		// print("getting 8");
+		unsigned long *local sp_ptr = LMBASE + SORT_OFFSET;
+		sp_ptr[OUT_CNT] = sp_ptr[OUT_CNT] - 1;
+		unsigned long *local lm_ptr = addr + offset;
+		copyOperands(op1, lm_ptr, 8);
+		cnt = cnt - 8;
+
+		if(cur_idx == tot && cnt == 0) {
+			// print("sending back");
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+
+	event memcpy_sp_to_dram(unsigned long src, unsigned long dst, unsigned long size_in) {
+		// unsigned long *local cur_src = src;
+		// unsigned long *local cur_dst = dst;
+
+		if (size_in == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+		offset = dst - src;
+		tot = size_in;
+		curaddr = src;
+		curto = dst;
+
+		cnt = 0;
+		cur_idx = 0;
+		
+		unsigned long evw = evw_update_event(CEVNT, memcpy_sp_to_dram_loop);
+		send_event(evw, 0, IGNRCONT);
+		yield;
+	}
+
+	event memcpy_sp_to_dram_loop() {
+		unsigned long *local sp_ptr = LMBASE + SORT_OFFSET;
+		unsigned long out_cnt = sp_ptr[OUT_CNT];
+		// print("sp_to_dram: out_cnt = %d", out_cnt);
+		while(out_cnt < OUT_LIMIT && cur_idx < tot) {
+			unsigned long * local addr = curaddr;
+			unsigned long * local addrto = curto;
+			if(cur_idx + 8 <= tot) {
+				// print("sending 8");
+				send_dram_write(addrto, addr, 8, memcpy_sp_to_dram_ret8);
+				curaddr = curaddr + 64;
+				curto = curto + 64;
+				cnt = cnt + 8;
+				cur_idx = cur_idx + 8;
+				out_cnt = out_cnt + 1;
+			} else {
+				// print("sending 1");
+				send_dram_write(addrto, addr, 1, memcpy_sp_to_dram_ret);
+				curaddr = curaddr + 8;
+				curto = curto + 8;
+				cnt = cnt + 1;
+				cur_idx = cur_idx + 1;
+				out_cnt = out_cnt + 1;
+			}
+		}
+		// print("after sending: out_cnt = %d", out_cnt);
+
+		sp_ptr[OUT_CNT] = out_cnt;
+		if(cur_idx < tot) {
+			unsigned long evw = evw_update_event(CEVNT, memcpy_sp_to_dram_loop);
+			send_event(evw, 0, IGNRCONT);
+			yield;
+		}
+	}
+	
+	event memcpy_sp_to_dram_ret() {
+		
+		unsigned long *local sp_ptr = LMBASE + SORT_OFFSET;
+		sp_ptr[OUT_CNT] = sp_ptr[OUT_CNT] - 1;
+		cnt = cnt - 1;
+		// print("getting write 1");
+		if(cur_idx == tot && cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+	event memcpy_sp_to_dram_ret8() {
+		
+		unsigned long *local sp_ptr = LMBASE + SORT_OFFSET;
+		sp_ptr[OUT_CNT] = sp_ptr[OUT_CNT] - 1;
+		cnt = cnt - 8;
+		// print("getting write 8");
+		if(cur_idx == tot && cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+	event memcpy_dram_to_dram(unsigned long src, unsigned long dst, unsigned long size_in) {
+		offset = dst - src;
+		tot = size_in;
+		curaddr = src;
+
+		cnt = 0;
+		cur_idx = 0;
+		
+		unsigned long evw = evw_update_event(CEVNT, memcpy_dram_to_dram_loop);
+		send_event(evw, 0, IGNRCONT);
+		yield;
+	}
+
+	event memcpy_dram_to_dram_loop() {
+		unsigned long *local sp_ptr = LMBASE + SORT_OFFSET;
+		unsigned long out_cnt = sp_ptr[OUT_CNT];
+		// print("dram_to_dram: out_cnt = %d", out_cnt);
+		while(out_cnt < OUT_LIMIT && cur_idx < tot) {
+			unsigned long * local addr = curaddr;
+			if(cur_idx + 8 <= tot) {
+				// print("sending 8");
+				send_dram_read(addr, 8, memcpy_dram_to_dram_ret8);
+				curaddr = curaddr + 64;
+				cnt = cnt + 8;
+				cur_idx = cur_idx + 8;
+				out_cnt = out_cnt + 1;
+			} else {
+				// print("sending 1");
+				send_dram_read(addr, 1, memcpy_dram_to_dram_ret);
+				curaddr = curaddr + 8;
+				cnt = cnt + 1;
+				cur_idx = cur_idx + 1;
+				out_cnt = out_cnt + 1;
+			}
+		}
+		// print("after sending: out_cnt = %d", out_cnt);
+
+		sp_ptr[OUT_CNT] = out_cnt;
+		if(cur_idx < tot) {
+			unsigned long evw = evw_update_event(CEVNT, memcpy_dram_to_dram_loop);
+			send_event(evw, 0, IGNRCONT);
+			yield;
+		}
+	}
+
+	event memcpy_dram_to_dram_ret(unsigned long val, unsigned long addr) {
+		unsigned long *local to_ptr = addr + offset;
+		send_dram_write(to_ptr, val, memcpy_dram_to_dram_write_ret);
+	}
+
+	event memcpy_dram_to_dram_ret8(unsigned long op1, unsigned long op2, 
+			unsigned long op3, unsigned long op4, 
+			unsigned long op5, unsigned long op6, 
+			unsigned long op7, unsigned long op8, 
+			unsigned long addr) {
+		unsigned long *local to_ptr = addr + offset;
+		send_dram_write_ops(to_ptr, op1, 8, memcpy_dram_to_dram_write_ret8);
+	}
+
+	event memcpy_dram_to_dram_write_ret() {
+		unsigned long *local sp_ptr = LMBASE + SORT_OFFSET;
+		sp_ptr[OUT_CNT] = sp_ptr[OUT_CNT] - 1;
+		cnt = cnt - 1;
+		if(cur_idx == tot && cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+	event memcpy_dram_to_dram_write_ret8() {
+		unsigned long *local sp_ptr = LMBASE + SORT_OFFSET;
+		sp_ptr[OUT_CNT] = sp_ptr[OUT_CNT] - 1;
+		cnt = cnt - 8;
+		if(cur_idx == tot && cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+}
+
+
+thread MemcpyLibOld {
+	// let this thread handle all memory copy operations
+	// and we can limit outstanding loads here
+
+	unsigned long cnt, offset;
+	event memcpy_dram_to_sp(unsigned long src, unsigned long dst, unsigned long size) {
+		unsigned long *local cur_addr = src;
+		offset = dst - src;
+#ifdef IO_V1
+		for (cnt = 0; cnt < size; cnt = cnt + 1) {
+			send_dram_read(cur_addr, 1, memcpy_dram_to_sp_ret);
+			cur_addr = cur_addr + 8;
+		}
+#else
+		cnt = 0;
+		while(cnt < size) {
+			if(cnt + 8 <= size) {
+				send_dram_read(cur_addr, 8, memcpy_dram_to_sp_ret8);
+				cur_addr = cur_addr + 64;
+				cnt = cnt + 8;
+			} else {
+				send_dram_read(cur_addr, 1, memcpy_dram_to_sp_ret);
+				cur_addr = cur_addr + 8;
+				cnt = cnt + 1;
+			}
+			
+		}
+#endif
+	}
+
+	event memcpy_dram_to_sp_ret(unsigned long val, unsigned long addr) {
+				// copyOperands(op0, lmbase, 8); ???
+
+		unsigned long *local lm_ptr = addr + offset;
+		*lm_ptr = val;
+		// print("getting %lu", val);
+		cnt = cnt - 1;
+		if(cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+	event memcpy_dram_to_sp_ret8(unsigned long op1, unsigned long op2, 
+			unsigned long op3, unsigned long op4, 
+			unsigned long op5, unsigned long op6, 
+			unsigned long op7, unsigned long op8, 
+			unsigned long addr) {
+		unsigned long *local lm_ptr = addr + offset;
+		copyOperands(op1, lm_ptr, 8);
+		cnt = cnt - 8;
+		if(cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+	event memcpy_sp_to_dram(unsigned long src, unsigned long dst, unsigned long size) {
+		unsigned long *local cur_src = src;
+		unsigned long *local cur_dst = dst;
+#ifdef IO_V1
+		for (cnt = 0; cnt < size; cnt = cnt + 1) {
+			send_dram_write(cur_dst, *cur_src, memcpy_sp_to_dram_ret);
+			cur_src = cur_src + 8;
+			cur_dst = cur_dst + 8;
+		}
+#else
+		cnt = 0;
+		while(cnt < size) {
+			if(cnt + 8 <= size) {
+				// print("sending write 8");
+				send_dram_write(cur_dst, cur_src, 8, memcpy_sp_to_dram_ret8);
+				cur_dst = cur_dst + 64;
+				cur_src = cur_src + 64;
+				cnt = cnt + 8;
+			} else {
+				// print("sending write 1");
+				send_dram_write(cur_dst, cur_src, 1, memcpy_sp_to_dram_ret);
+				cur_dst = cur_dst + 8;
+				cur_src = cur_src + 8;
+				cnt = cnt + 1;
+			}
+		}
+#endif
+	}
+	
+	event memcpy_sp_to_dram_ret() {
+		cnt = cnt - 1;
+		// print("getting write 1");
+		if(cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+	event memcpy_sp_to_dram_ret8() {
+		cnt = cnt - 8;
+		// print("getting write 8");
+		if(cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+	event memcpy_dram_to_dram(unsigned long src, unsigned long dst, unsigned long size) {
+		
+		unsigned long *local cur_addr = src;
+		offset = dst - src;
+#ifdef IO_V1
+		for (cnt = 0; cnt < size; cnt = cnt + 1) {
+			send_dram_read(cur_addr, 1, memcpy_dram_to_dram_ret);
+			cur_addr = cur_addr + 8;
+		}
+#else
+		cnt = 0;
+		while(cnt < size) {
+			if(cnt + 8 <= size) {
+				// print("sending write 8");
+				send_dram_read(cur_addr, 8, memcpy_dram_to_dram_ret8);
+				cur_addr = cur_addr + 64;
+				cnt = cnt + 8;
+			} else {
+				// print("sending write 1");
+				send_dram_read(cur_addr, 1, memcpy_dram_to_dram_ret);
+				cur_addr = cur_addr + 8;
+				cnt = cnt + 1;
+			}
+		}
+#endif
+
+	}
+
+	event memcpy_dram_to_dram_ret(unsigned long val, unsigned long addr) {
+		unsigned long *local to_ptr = addr + offset;
+		send_dram_write(to_ptr, val, memcpy_dram_to_dram_write_ret);
+	}
+
+	event memcpy_dram_to_dram_ret8(unsigned long op1, unsigned long op2, 
+			unsigned long op3, unsigned long op4, 
+			unsigned long op5, unsigned long op6, 
+			unsigned long op7, unsigned long op8, 
+			unsigned long addr) {
+		unsigned long *local to_ptr = addr + offset;
+		send_dram_write_ops(to_ptr, op1, 8, memcpy_dram_to_dram_write_ret8);
+	}
+
+	event memcpy_dram_to_dram_write_ret() {
+		cnt = cnt - 1;
+		if(cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+
+	event memcpy_dram_to_dram_write_ret8() {
+		cnt = cnt - 8;
+		if(cnt == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+}
+
+
+thread ExternalMergeSort {
+	// sp_size is the number of words available in the scratchpad
+	unsigned long *list_dram_addr, *sp_ptr, list_size, sp_size;
+	unsigned long cur_idx;
+	unsigned long save_cont;
+	unsigned long cur_block_size;
+
+	event sort(unsigned long *list_dram_addr_in, long size_in, unsigned long *sp_ptr_in, long sp_size_in) {
+		list_dram_addr = list_dram_addr_in;
+		list_size = size_in;
+		sp_ptr = sp_ptr_in;
+		sp_size = sp_size_in;
+		// print("in external merge sort %lu %lu %lu %lu", list_dram_addr, list_size, sp_ptr, sp_size);
+		// print("in external merge sort");
+		unsigned long evw = evw_update_event(CEVNT, phase1);
+
+
+		save_cont = CCONT;
+		send_event(evw, 0, IGNRCONT);
+	}
+
+	
+	event phase1() {
+		cur_idx = 0;
+		unsigned long evw = evw_update_event(CEVNT, phase1_main_loop);
+		send_event(evw, 0, IGNRCONT);
+	}
+
+	event phase1_main_loop() {
+		// print("curidx = %d", cur_idx);
+		// print("cur_idx = %d, list_size = %d, sp_size = %d", cur_idx, list_size, sp_size);
+		if(cur_idx <= (list_size - 1) / sp_size) {
+			unsigned long l = cur_idx * sp_size;
+			unsigned long r = (cur_idx + 1) * sp_size;
+			if(r > list_size) {
+				r = list_size;
+			}
+			cur_idx = cur_idx + 1;
+
+			// unsigned long block_size = r - l;
+			unsigned long* local ptr = list_dram_addr + l * 8;
+			// print("block_size = %d", block_size);
+
+			r = r - l;
+			unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2LocalSortDRAM::init);
+			send_event(evw, r, sp_ptr, ptr, phase1_main_loop);
+		} else {
+			unsigned long evw = evw_update_event(CEVNT, phase2);
+			send_event(evw, 0, IGNRCONT);
+			// send_event(save_cont, 0, IGNRCONT);
+		}
+	}
+
+	event phase2() {
+		unsigned long i;
+		unsigned long * local local_sp_ptr = sp_ptr;
+		for (i = 0; i < sp_size; i = i + 1) {
+			local_sp_ptr[i] = -1;
+		}
+
+		cur_block_size = sp_size;
+		unsigned long evw = evw_update_event(CEVNT, phase2_main_loop);
+		send_event(evw, 0, IGNRCONT);
+	}
+
+	event phase2_main_loop() {
+		if(cur_block_size < list_size) {
+			cur_idx = 0;
+			unsigned long evw = evw_update_event(CEVNT, phase2_inner_loop);
+			send_event(evw, 0, IGNRCONT);
+		} else {
+			send_event(save_cont, 0, IGNRCONT); 
+		}
+	}
+
+	event phase2_inner_loop() {
+		if(cur_idx + cur_block_size < list_size) {
+			// pta = list_dram_addr + cur_idx * 8;
+			// ptb = list_dram_addr + (cur_idx + cur_block_size) * 8;
+
+			
+			// print("merging %d %d with blocksize = %d", cur_idx, (cur_idx + cur_block_size), cur_block_size);
+			// unsigned long evw = evw_update_event(CEVNT, phase2_merger);
+			unsigned long evw = evw_new(NETID, ExternalMerger::merger);
+			unsigned long * local send_ptr = LMBASE + SEND_BUFFER_OFFSET;
+			send_ptr[0] = list_dram_addr + cur_idx * 8;
+			send_ptr[1] = list_dram_addr + (cur_idx + cur_block_size) * 8;
+			unsigned long last = cur_idx + cur_block_size * 2;
+			// print("last = %d", last);
+			if(last >= list_size) {
+				last = list_size;
+			}
+			send_ptr[2] = list_dram_addr + last * 8;
+			send_ptr[3] = sp_ptr;
+			send_ptr[4] = sp_size;
+			send_ptr[5] = list_dram_addr + list_size * 8;
+			send_event(evw, send_ptr, 6, phase2_inner_loop);
+			cur_idx = cur_idx + cur_block_size * 2;
+
+		}
+		else {
+			unsigned long evw = evw_update_event(CEVNT, phase2_main_loop);
+			send_event(evw, 0, IGNRCONT);
+			cur_block_size = cur_block_size * 2;
+		}
+	}
+
+}
+
+thread ExternalMerger {
+	unsigned long c0, e0, c1, e1, tot;
+	unsigned long *local sp_ptr0, *local sp_ptr1;
+	unsigned long k;
+	unsigned long *tmp_addr;
+	unsigned long cnt, nwait;
+	event merger(unsigned long p0, unsigned long p1, unsigned long p2, unsigned long *sp_ptr_in, unsigned long sp_size, unsigned long *tmp_addr_in) {
+		// send_event(CCONT, 0, IGNRCONT);
+		// print("in merger %lu %lu %lu %lu %lu", p0, p1, p2, sp_ptr, sp_size);
+		tot = (p2 - p0) / 8;
+		k = sp_size / 2;
+		c0 = p0;
+		e0 = p1;
+		c1 = p1;
+		e1 = p2;
+		tmp_addr = tmp_addr_in;
+		sp_ptr0 = sp_ptr_in;
+		sp_ptr1 = sp_ptr_in + k * 8;
+		nwait = 0;
+		// print("starting merging tot = %d", tot);
+
+		// // merging block A and B
+		// // let k = sp_size / 2;
+		// // sp_ptr[0...k-1] will be circular buffer for block A
+		// // sp_ptr[k, 2k-1] will be circular buffer for block B
+
+		// // pull the circular buffer
+
+		cnt = 0;
+		unsigned long * local cur_addr = c0;
+		for (int i = 0; i < k; i = i + 1) {
+			send_dram_read(cur_addr, 1, phase2_merger_load_a_ret);
+			cnt = cnt + 1;
+			cur_addr = cur_addr + 8;
+		}
+
+		
+		unsigned long lim = (p2 - p1) / 8;
+		cur_addr = c1;
+		if(lim > k) {
+			lim = k;
+		}
+		for (int i = 0; i < lim; i = i + 1) {
+			send_dram_read(cur_addr, 1, phase2_merger_load_b_ret);
+			cnt = cnt + 1;
+			cur_addr = cur_addr + 8;
+		}
+	}
+
+	event phase2_merger_load_a_ret(unsigned long val, unsigned long addr) {
+
+		sp_ptr0[(addr / 8) % k] = val;
+		cnt = cnt - 1;
+
+		unsigned long gotcha = 0;
+		if(nwait & 1) {
+			nwait = nwait ^ 1;
+			if(nwait == NWAIT_EMPTY) {
+				gotcha = 1;
+			}
+		}
+
+		if((cnt == 0 && nwait == 0) || gotcha) {
+			if((cnt == 0 && nwait == 0)) {
+				nwait = NWAIT_EMPTY;
+			}
+			// print("got a calling");
+			unsigned long evw = evw_update_event(CEVNT, merge_single);
+			send_event(evw, 0, IGNRCONT);
+		}
+	}
+	event phase2_merger_load_b_ret(unsigned long val, unsigned long addr) {
+		// print("b getting %d %lu at location", val, addr);
+		cnt = cnt - 1;
+		sp_ptr1[(addr / 8) % k] = val;
+
+		unsigned long gotcha = 0;
+		if(nwait & 2) {
+			nwait = nwait ^ 2;
+			if(nwait == NWAIT_EMPTY) {
+				gotcha = 1;
+			}
+		}
+
+		if((cnt == 0 && nwait == 0) || gotcha) {
+			if((cnt == 0 && nwait == 0)) {
+				nwait = NWAIT_EMPTY;
+			}
+			// print("got b calling");
+			unsigned long evw = evw_update_event(CEVNT, merge_single);
+			send_event(evw, 0, IGNRCONT);
+		}
+	}
+	event merge_single() {
+		
+		if(nwait != NWAIT_EMPTY) {
+			// print("not making any sense: nwai = %d", nwait);
+			yield_terminate;
+		}
+
+	
+
+		if (c0 > e0 || c1 > e1) {
+
+			if(cnt == 0) {
+				
+				// print("???");
+				// send_event(CCONT, 0, IGNRCONT);
+				yield_terminate;
+			} else {
+				yield;
+			}
+
+		}
+
+		unsigned long val0 = -1, val1 = -1;
+
+		
+		// If the value 
+		if(c0 < e0) {
+			val0 = sp_ptr0[(c0 / 8) % k];
+			if(val0 == -1) {
+				nwait = nwait | 1;
+			} 
+		}
+		if(c1 < e1) {
+			val1 = sp_ptr1[(c1 / 8) % k];
+			if(val1 == -1) {
+				nwait = nwait | 2;
+			}
+		}
+		// print("merging single %d", nwait);
+		if(nwait != NWAIT_EMPTY) {
+			// wait for values to return
+			// print("waiting for return");
+			yield;
+		}
+
+
+		// choose 1 value to push, and pull next values
+		if(val0 < val1) {
+			send_dram_write(tmp_addr, val0, merge_single_write_ret);
+			cnt = cnt + 1;
+			tmp_addr = tmp_addr + 8;
+
+			nwait = c0 / 8;
+			nwait = nwait % k;
+			sp_ptr0[nwait] = -1;
+			if (c0 + k * 8 < e0) {
+				unsigned long *local cur_addr = c0 + k * 8;
+				send_dram_read(cur_addr, 1, phase2_merger_load_a_ret);
+				cnt = cnt + 1;
+			}
+			c0 = c0 + 8;
+			// print("poping a : %d", val0);
+			// print("outstanding cnt = %d", cnt);
+
+
+		} else {
+			send_dram_write(tmp_addr, val1, merge_single_write_ret);
+			cnt = cnt + 1;
+			tmp_addr = tmp_addr + 8;
+			nwait = c1 / 8;
+			nwait = nwait % k;
+			sp_ptr1[nwait] = -1;
+			if (c1 + k * 8 < e1) {
+				unsigned long *local cur_addr = c1 + k * 8;
+
+				send_dram_read(cur_addr, 1, phase2_merger_load_b_ret);
+				cnt = cnt + 1;
+			}
+			c1 = c1 + 8;
+			// print("poping b : %d", val1);
+			// print("outstanding cnt = %d", cnt);
+		}
+
+		// print("c0 = %lu, e0 = %lu, c1 = %lu, e1 = %lu", c0, e0, c1, e1);
+
+		// borrowed nwait for intermediates
+		nwait = NWAIT_EMPTY;
+
+		if (c0 != e0 || c1 != e1) {
+			// print("sending out");
+			unsigned long evw = evw_update_event(CEVNT, merge_single);
+			send_event(evw, 0, IGNRCONT);
+		}
+	}
+
+	event merge_single_write_ret() {
+		// print("writing xxx");
+		cnt = cnt - 1;
+		if (c0 == e0 && c1 == e1 && cnt == 0) {
+			// print("returning from merge_sin1gle");
+			unsigned long evw = evw_update_event(CEVNT, write_back);
+			send_event(evw, 0, IGNRCONT);
+		}
+		yield;
+	}
+
+	event write_back() {
+		cnt = 0;
+		unsigned long tot_bytes = tot * 8;
+		tmp_addr = tmp_addr - tot_bytes;
+		c0 = e1 - tot_bytes;
+		unsigned long *local cur_addr = c0;
+		k = cur_addr - tmp_addr;
+		
+		// for (int i = 0; i < tot; i = i + 1) {
+		// 	send_dram_read(tmp_addr, 1, write_back_load_ret);	
+		// 	tmp_addr = tmp_addr + 8;
+		// 	cnt = cnt + 1;
+		// }
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_dram);
+		send_event(evw, tmp_addr, cur_addr, tot, write_back_write_ret);
+
+		// write the array back to original place
+	}
+
+	event write_back_load_ret(unsigned long val, unsigned long addr) {
+		unsigned long *local next_addr = addr + k;
+		send_dram_write(next_addr, val, write_back_write_ret);
+	}
+
+	event write_back_write_ret() {
+		// cnt = cnt - 1;
+		if(1) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+	}
+}
+
+
+thread ParallelPrefixPerLane {
+	long bid;
+	unsigned long offset, offset_buffer;
+	long has, tot;
+	// unsigned long gadd;
+	unsigned long *addr1, *addr2, size1, size2;
+	event prefix_forward_per_lane(long base_lane_in, unsigned long *addr1_in, long size1_in, long *addr2_in, long size2_in, long offset_buffer_in) {
+		addr1 = addr1_in;
+		addr2 = addr2_in;
+		size1 = size1_in;
+		size2 = size2_in;
+		// pull a block from memory and calculate prefix
+		// (if there is more than one block), store the sum into next block 
+		// print("in prefix_forward_per_lane %d %d", size1_in, size2_in);
+		bid = NETID - base_lane_in;
+		offset_buffer = offset_buffer_in;
+		long st = bid * PBLOCKSIZE;
+		long ed = st + PBLOCKSIZE;
+		if(ed > size1) {
+			ed = size1;
+		}
+		// print("st = %d, ed = %d", st, ed);
+		tot = ed - st;
+		unsigned long * local ptr = addr1 + bid * PBLOCKSIZE * 8;
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_sp);
+		send_event(evw, ptr, LMBASE + offset_buffer_in, tot, prefix_forward_per_lane_load_ret);
+		// print("per lane prefix %d %d", size1, size2);
+		// send_event(CCONT, 0, IGNRCONT);
+	}
+
+	event prefix_forward_per_lane_load_ret() {
+		// if(1) {
+		// 	unsigned long* local lm_ptr = addr + offset;
+		// 	*lm_ptr = key;
+
+		// }
+		// // print("getting %d %lu", key, addr);
+		// has = has - 1;
+		if(1) {
+			unsigned long *local sp_ptr = LMBASE + offset_buffer;
+			long i;
+			unsigned long * local ptr = addr1 + bid * PBLOCKSIZE * 8;
+			
+			unsigned long sum = 0;
+			for (i = 0; i < tot; i = i + 1) {
+				send_dram_write(ptr, sum, prefix_forward_per_lane_write_ret);
+				// print("%d %d", sp_ptr[i], sum);
+				sum = sum + sp_ptr[i];
+				ptr = ptr + 8;
+			}
+			if(size2 != 0) {
+				send_dram_write((addr2 + bid * 8), sum, prefix_forward_per_lane_write_ret);
+				tot = tot + 1;
+			}
+		}
+	}
+
+	event prefix_forward_per_lane_write_ret() {
+		tot = tot - 1;
+		if(tot == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+		}
+	}
+
+	event prefix_backward_per_lane(long base_lane_in, unsigned long *addr1_in, long size1_in, long *addr2_in, long size2_in, long offset_buffer_in) {
+		addr1 = addr1_in;
+		addr2 = addr2_in;
+		size1 = size1_in;
+		size2 = size2_in;
+		// pull a block from memory and calculate prefix
+		// (if there is more than one block), store the sum into next block 
+		// print("in prefix_forward_per_lane %d %d", size1_in, size2_in);
+		bid = NETID - base_lane_in;
+		offset_buffer = offset_buffer_in;
+		long st = bid * PBLOCKSIZE;
+		long ed = st + PBLOCKSIZE;
+		if(ed > size1) {
+			ed = size1;
+		}
+		// print("st = %d, ed = %d", st, ed);
+		tot = ed - st;
+		unsigned long * local ptr = addr1 + bid * PBLOCKSIZE * 8;
+		offset = (LMBASE + offset_buffer_in);
+		// for (has = 0; has < tot; has = has + 1) {
+		// 	send_dram_read(ptr, 1, prefix_backward_per_lane_load_ret);
+		// 	ptr = ptr + 8;
+		// }
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_sp);
+		send_event(evw, ptr, offset, tot, prefix_backward_per_lane_load_ret);
+		send_dram_read((addr2 + bid * 8), 1, prefix_backward_per_lane_load_ret);
+		// print("per lane prefix %d %d", size1, size2);
+		has = 2;
+	}
+
+	event prefix_backward_per_lane_load_ret(unsigned long key, unsigned long *addr) {
+		// if(addr > addr2) {/
+		// } 
+		if((addr2 + bid * 8) == addr) {
+			size2 = key;
+			// print("geeting size2 = %d %lu", size2, key);
+		}
+		// print("getting %d %lu", key, addr);
+		has = has - 1;
+		if(has == 0) {
+			unsigned long *local sp_ptr = LMBASE + offset_buffer;
+			long i;
+			unsigned long * local ptr = addr1 + bid * PBLOCKSIZE * 8;
+			
+			unsigned long res;
+			for (i = 0; i < tot; i = i + 1) {
+				res = sp_ptr[i] + size2;
+				send_dram_write(ptr, res, prefix_backward_per_lane_write_ret);
+				// print("sending %d %d", size2, res);
+				ptr = ptr + 8;
+			}
+		}
+	}
+
+	event prefix_backward_per_lane_write_ret() {
+		tot = tot - 1;
+		if(tot == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+		}
+	}
+}
+
+thread Distributed_sort {
+	long user_cont;
+	event sort_new(long sort_lm_offset, long list_size, long  list_addr, long num_lanes, unsigned long tmp_addr, long num_bins, long lb_addr, int max_value) {
+		// print("in sorssss");
+		// send_event(CCONT, 0, IGNRCONT);
+		// print("sort_lm_offset %d", sort_lm_offset);
+		// print("list_size %d", list_size);
+		// print("num_bins %d", num_bins);
+		// print("num_lanes %d", num_lanes);
+		// print("max_value %d", max_value);
+
+		long evword, label, cont_word;
+        long* local sp_ptr;
+
+		user_cont = CCONT;
+
+		if(num_bins % num_lanes != 0) {
+			print("Number of bins should be a multiple of number of lanes");
+			send_event(CCONT, 0, IGNRCONT);
+			yield_terminate;
+		}
+
+		evword = evw_new(NETID, DistributedSortBroadcast__broadcast_global);
+        label = 0;
+        label = evw_update_event(label, Distributed_sort_per_lane_thread::sort_init_per_lane);
+        // cont_word = evw_update_event(CEVNT, sort_phase1_init_cache);
+        cont_word = evw_update_event(CEVNT, sort_phase1_init_cache);
+
+        sp_ptr = LMBASE + SEND_BUFFER_OFFSET;
+
+        sp_ptr[0] = num_lanes;
+        sp_ptr[1] = label;
+		sp_ptr[2] = (list_size << 32) | NETID;
+		sp_ptr[3] = list_addr;
+        sp_ptr[4] = tmp_addr;
+		sp_ptr[5] = (num_lanes << 32) | num_bins;
+		sp_ptr[6] = (0 << 32) | max_value;
+		sp_ptr[7] = list_addr;
+
+        send_event(evword, sp_ptr, 8, cont_word);
+		sp_ptr = LMBASE + SORT_OFFSET;
+		sp_ptr[LB_TMP_ADDR] = lb_addr;
+		print("lbaddr = %lu", lb_addr);
+
+		yield;
+		// yield_terminate;
+	}
+
+	event sort_phase1_init_cache() {
+		// long evword, label, cont_word;
+		long* local sp_ptr = LMBASE + SORT_OFFSET;
+		unsigned long evw = evw_new(NETID, phase1_bin_size_cache::cache_init);
+		// unsigned long evw = evw_update_event(CEVNT, sort_phase1_init);
+
+        unsigned long cont = evw_update_event(CEVNT, sort_phase1_init);
+		
+		send_event(evw, sp_ptr[NUM_LANES], sp_ptr[BIN_SIZE_START], sp_ptr[NUM_BINS], sort_phase1_init);
+	}
+
+	event sort_phase1_init() {
+		asm {"perflog 1 0 'sorting phase 1'" };
+#ifdef DEBUG
+		print("sort phase1");
+#endif
+		// construct UDKVMSR call
+        unsigned long* local sendbuf_lm_ptr = LMBASE + SEND_BUFFER_OFFSET;
+		unsigned long* local sp_ptr = LMBASE + SORT_OFFSET;
+		unsigned long list_size = sp_ptr[LIST_SIZE];
+		unsigned long* list_addr = sp_ptr[LIST_ADDR];
+		unsigned long nlanes = sp_ptr[NUM_LANES];
+
+		unsigned long* local input_meta_ptr = LMBASE + SHT_0_OFFSET;
+		input_meta_ptr[0] = list_addr; // Pointer to the input list (64-bit DRAM address)
+		input_meta_ptr[1] = list_size; // size of the list (64-bit DRAM address)
+
+		unsigned long* local lb_meta_ptr = LMBASE + SORT_OFFSET + 8 * LB_TMP_ADDR;
+
+        sendbuf_lm_ptr[0] = sp_ptr[BIN_SIZE_START] + sp_ptr[NUM_BINS] * 8; // Pointer to the partition array (64-bit DRAM address)
+		#ifdef INSERTION
+		// sendbuf_lm_ptr[1] = 16; // Number of partitions per lane
+		sendbuf_lm_ptr[1] = 1; // Number of partitions per lane
+		#else
+        sendbuf_lm_ptr[1] = 1; // Number of partitions per lane
+        #endif
+		sendbuf_lm_ptr[2] = nlanes; // Number of lanes
+		sendbuf_lm_ptr[3] = input_meta_ptr; // input kvset metadata lm address
+		sendbuf_lm_ptr[4] = lb_meta_ptr;
+		// sendbuf_lm_ptr[4] = msr_output_kvset_metadata_lm_ptr; // output kvset metadata lm address
+
+#ifdef INSERTION
+		unsigned long evw ;
+		if (*lb_meta_ptr == 0) {
+        	evw = evw_new(NETID, DistributedSortPhase1Insertion::map_shuffle_reduce, 5);
+		} else {
+			evw = evw_new(NETID, DistributedSortPhase1InsertionLb::map_shuffle_reduce, 5);
+		}
+
+
+#else
+		unsigned long evw = evw_new(NETID, DistributedSortPhase1::map_shuffle_reduce, 5);
+#endif
+        // unsigned long cont = evw_update_event(CEVNT, sort_end);
+		unsigned long cont = evw_update_event(CEVNT, sort_phase1_post_processing);
+
+        send_event(evw, sendbuf_lm_ptr, 5, cont);
+		// print("returning from sort_end");
+		// print("here");
+		// print("launching phase 1");
+		// send_event(CCONT, 0, IGNRCONT);
+
+		// yield_terminate;
+	}
+
+	event sort_phase1_post_processing() {
+		print("in sort_phase1_post_processing");
+		long* local sp_ptr = LMBASE + SORT_OFFSET;
+		unsigned long evw = evw_new(NETID, phase1_bin_size_cache::cache_flush);
+		// unsigned long evw = evw_update_event(CEVNT, sort_phase1_init);
+
+        unsigned long cont = evw_update_event(CEVNT, sort_phase1_init);
+		
+
+#ifdef INSERTION
+		send_event(evw, sp_ptr[NUM_LANES], sp_ptr[BIN_SIZE_START], sp_ptr[NUM_BINS], sort_end);
+#else
+		send_event(evw, sp_ptr[NUM_LANES], sp_ptr[BIN_SIZE_START], sp_ptr[NUM_BINS], sort_phase2_init);
+#endif
+		
+
+		yield;
+		// yield_terminate;
+	}
+
+
+	// event sort_phase1_post_processing() {
+	// 	long evword, label, cont_word;
+	// 	long* local sp_ptr;
+		
+
+	// 	// print("in sort_phase1_post_processing");
+	// 	evword = evw_new(NETID, DistributedSortBroadcast__broadcast_global);
+    //     label = 0;
+    //     label = evw_update_event(label, Distributed_sort_per_lane_thread::sort_post_phase1_per_lane);
+    //     // cont_word = evw_update_event(CEVNT, sort_phase2_init);
+    //     cont_word = evw_update_event(CEVNT, sort_end);
+
+	// 	unsigned long* local sort_ptr = LMBASE + SORT_OFFSET;
+
+    //     sp_ptr = LMBASE + SEND_BUFFER_OFFSET;
+
+    //     sp_ptr[0] = sort_ptr[NUM_LANES];
+    //     sp_ptr[1] = label;
+
+    //     send_event(evword, sp_ptr, 8, cont_word);
+
+	// 	yield;
+	// 	// yield_terminate;
+	// }
+
+
+	event sort_phase2_init() {
+		asm {"perflog 1 0 'sorting phase 2'" };
+#ifdef DEBUG
+		print("sort phase2");
+#endif
+        unsigned long* local sendbuf_lm_ptr = LMBASE + SEND_BUFFER_OFFSET;
+		unsigned long* local sp_ptr = LMBASE + SORT_OFFSET;
+		unsigned long list_size = sp_ptr[LIST_SIZE];
+		unsigned long* list_addr = sp_ptr[LIST_ADDR];
+		unsigned long nlanes = sp_ptr[NUM_LANES];
+
+		unsigned long* local input_meta_ptr = LMBASE + SHT_0_OFFSET;
+		input_meta_ptr[0] = sp_ptr[BIN_SIZE_START]; // Pointer to the input list (64-bit DRAM address)
+		input_meta_ptr[1] = sp_ptr[NUM_BINS]; // size of the list (64-bit DRAM address)
+
+        sendbuf_lm_ptr[0] = sp_ptr[BIN_TMP_ADDR]; // Pointer to the partition array (64-bit DRAM address)
+		#ifdef REDUCE_BINSORT
+			sendbuf_lm_ptr[1] = 1; // Number of partitions per lane
+		#else
+			sendbuf_lm_ptr[1] = sp_ptr[NUM_BINS] / sp_ptr[NUM_LANES]; // Number of partitions per lane
+			// if (sendbuf_lm_ptr[1] > 32) {
+			// 	sendbuf_lm_ptr[1] = 32;
+			// }
+		#endif
+		sendbuf_lm_ptr[2] = nlanes; // Number of lanes
+		// sendbuf_lm_ptr[1] = sp_ptr[NUM_BINS] / sp_ptr[NUM_LANES]; // Number of partitions per lane
+		
+        sendbuf_lm_ptr[2] = nlanes; // Number of lanes
+		sendbuf_lm_ptr[3] = input_meta_ptr; // input kvset metadata lm address
+		unsigned long* local lb_meta_ptr = LMBASE + SORT_OFFSET + 8 * LB_TMP_ADDR;
+
+		sendbuf_lm_ptr[4] = lb_meta_ptr;
+		// unsigned long* local lb_meta_ptr = LMBASE + SHT_1_OFFSET;
+		// lb_meta_ptr[0] = sp_ptr[BIN_SIZE_START] + sp_ptr[NUM_BINS] * 3 * 8;
+		// lb_meta_ptr[1] = lb_meta_ptr[0] + sp_ptr[NUM_BINS] * 8;
+		// sendbuf_lm_ptr[4] = lb_meta_ptr;
+
+		print("passed lb start address: %lu", lb_meta_ptr[0]);
+		// sendbuf_lm_ptr[4] = msr_output_kvset_metadata_lm_ptr; // output kvset metadata lm address
+		
+        unsigned long evw;
+		if(*lb_meta_ptr == 0) {
+			#ifdef REDUCE_BINSORT
+
+				evw = evw_new(NETID, DistributedSortPhase2::map_shuffle_reduce, 5);
+			#else
+				evw = evw_new(NETID, DistributedSortPhase2Mapper::map_shuffle_reduce, 5);
+			#endif
+		} else {
+			#ifdef REDUCE_BINSORT
+				evw = evw_new(NETID, DistributedSortPhase2Lb::map_shuffle_reduce, 5);			
+			#else
+				evw = evw_new(NETID, DistributedSortPhase2MapperLb::map_shuffle_reduce, 5);
+			#endif			
+		}
+        // unsigned long cont = evw_update_event(CEVNT, sort_phase3_init);
+        unsigned long cont = evw_update_event(CEVNT, sort_end);
+        send_event(evw, sendbuf_lm_ptr, 5, cont);
+		// print("returning from sort_end");
+		// print("here");
+		// print("launching phase 1");
+		// send_event(CCONT, 0, IGNRCONT);
+	}
+
+	event sort_phase3_init() {
+#ifdef DEBUG
+		print("sort phase3");
+#endif
+		asm {"perflog 1 0 'sorting phase 3'" };
+
+		long evword, label, cont_word;
+        long* local sp_ptr;
+		unsigned long* local sort_ptr;
+
+
+		// Phase 3:
+		// 1.  run parallel prefix
+		// 2. use difference between size to put element in place
+
+
+		evword = evw_new(NETID, ParallelPrefix::prefix);
+        label = 0;
+        cont_word = evw_update_event(CEVNT, sort_phase3_move_array);
+
+        sp_ptr = LMBASE + SEND_BUFFER_OFFSET;
+
+		sort_ptr = LMBASE + SORT_OFFSET;
+		
+
+        sp_ptr[0] = sort_ptr[BIN_SIZE_START];
+        sp_ptr[1] = sort_ptr[NUM_BINS] + 1;
+		sp_ptr[2] = sort_ptr[NUM_LANES];
+		sp_ptr[3] = SORT_OFFSET + COUNTERS_OFFSET;
+		sp_ptr[4] = SORT_OFFSET + COUNTERS_OFFSET + PBLOCKSIZE * 8;
+
+        send_event(evword, sp_ptr, 8, cont_word);
+	}
+
+	event sort_phase3_move_array() {
+
+		print("launching phase 3");
+		// move array to the right place
+		unsigned long* local sendbuf_lm_ptr = LMBASE + SEND_BUFFER_OFFSET;
+		unsigned long* local sp_ptr = LMBASE + SORT_OFFSET;
+		unsigned long list_size = sp_ptr[LIST_SIZE];
+		unsigned long* list_addr = sp_ptr[LIST_ADDR];
+		unsigned long nlanes = sp_ptr[NUM_LANES];
+
+		unsigned long* local input_meta_ptr = LMBASE + SHT_0_OFFSET;
+		input_meta_ptr[0] = sp_ptr[BIN_SIZE_START]; // Pointer to the input list (64-bit DRAM address)
+		input_meta_ptr[1] = sp_ptr[NUM_BINS]; // size of the list (64-bit DRAM address)
+
+        sendbuf_lm_ptr[0] = sp_ptr[BIN_TMP_ADDR] + 8; // Pointer to the partition array (64-bit DRAM address)
+        sendbuf_lm_ptr[1] = 1; // Number of partitions per lane
+        sendbuf_lm_ptr[2] = nlanes; // Number of lanes
+		sendbuf_lm_ptr[3] = input_meta_ptr; // input kvset metadata lm address
+		// sendbuf_lm_ptr[4] = msr_output_kvset_metadata_lm_ptr; // output kvset metadata lm address
+
+        unsigned long evw = evw_new(NETID, DistributedSortPhase3::map_shuffle_reduce, 5);
+        unsigned long cont = evw_update_event(CEVNT, sort_end);
+        // unsigned long cont = evw_update_event(CEVNT, sort_end);
+        send_event(evw, sendbuf_lm_ptr, 5, cont);
+		// print("returning from sort_end");
+		// print("here");
+		// print("launching phase 1");
+		// send_event(CCONT, 0, IGNRCONT);
+	}
+
+
+	// event sort_phase3_init() {
+		
+	// }
+	
+	event sort_end() {
+		asm {"perflog 1 0 'sorting end'" };
+        // print("Number of workers: %ld", number_workers);
+		print("returning from sort_end");
+		// print("here");
+		send_event(user_cont, 0, IGNRCONT);
+
+		yield_terminate;
+	}
+}
+
+thread Distributed_sort_per_lane_thread {
+	long tot, tot2;
+	unsigned long offset;
+	event sort_init_per_lane(long list_size_base, long  list_addr, long tmp_addr, long num_lanes_num_bins, long use_unique_max_value, long* list_ptr) {
+		long num_bins, num_lanes, bins_per_lane;
+		if(1) {
+			long* local sp_ptr = LMBASE + SORT_OFFSET;
+			sp_ptr[LIST_SIZE] = list_size_base >> 32;
+			sp_ptr[BASE_LANE] = list_size_base & 0xFFFFFFFF;
+			sp_ptr[LIST_ADDR] = list_addr;
+			sp_ptr[TMP_ADDR] = tmp_addr;
+			num_lanes = num_lanes_num_bins >> 32;
+			sp_ptr[NUM_LANES] = num_lanes;
+			sp_ptr[NUM_BINS] = num_lanes_num_bins & 0xFFFFFFFF;
+			sp_ptr[USE_UNIQUE] = use_unique_max_value >> 32;
+			sp_ptr[MAX_VALUE] = use_unique_max_value & 0xFFFFFFFF;
+			num_bins = sp_ptr[NUM_BINS];
+			sp_ptr[BIN_SIZE] = (sp_ptr[MAX_VALUE] + num_bins) / num_bins;
+			sp_ptr[BKSIZE] = sp_ptr[BIN_SIZE] * (num_bins / num_lanes);
+			bins_per_lane = num_bins / num_lanes;
+			sp_ptr[BINS_PER_LANE] = bins_per_lane;
+			sp_ptr[DRAM_BLOCK_SIZE] = (list_size_base >> 32) / num_bins * BIN_FACTOR * 8;
+			sp_ptr[BIN_SIZE_START] = sp_ptr[TMP_ADDR] + num_bins * sp_ptr[DRAM_BLOCK_SIZE];
+			// print("bin_size_start = %lu", sp_ptr[BIN_SIZE_START]);
+			sp_ptr[BIN_TMP_ADDR] = sp_ptr[TMP_ADDR] + num_bins * sp_ptr[DRAM_BLOCK_SIZE] + num_bins * 8;
+			sp_ptr[LANE_SPACE_BITMAP] = 0;
+			sp_ptr[OUT_CNT] = 0;
+			// print("list_addr %lu, tmp_addr %lu, num_lanes %d, num_bins %d, use_unique %d, max_value %d, bin_size %d, bksize = %d, dram_block_size = %d", sp_ptr[LIST_ADDR], sp_ptr[TMP_ADDR], sp_ptr[NUM_LANES], sp_ptr[NUM_BINS], sp_ptr[USE_UNIQUE], sp_ptr[MAX_VALUE], sp_ptr[BIN_SIZE], sp_ptr[BKSIZE], sp_ptr[DRAM_BLOCK_SIZE]);
+
+		}
+
+		if(1){
+			long idx = 0;
+			unsigned long* local rptr = LMBASE + (SORT_OFFSET + COUNTERS_OFFSET);
+			// long bins_per_lane = num_bins / num_lanes;
+			for (idx = 0; idx < bins_per_lane; idx = idx + 1) {
+				rptr[idx] = 0;
+				// ptr = ptr + 8;
+				// print("ptr = %lu", ptr);
+			}
+		}
+
+		if(1) {
+			unsigned long* local ptr = LMBASE + SORT_OFFSET;
+			// unsigned long bins_per_lane = ptr[BINS_PER_LANE];
+			unsigned long* local dram_addr = (NETID - ptr[BASE_LANE]) * bins_per_lane * 8 + ptr[BIN_SIZE_START];
+
+			unsigned long* local lm_addr = LMBASE + SORT_OFFSET + COUNTERS_OFFSET; 
+			unsigned long evw = evw_update_event(CEVNT, MemcpyLib::memcpy_sp_to_dram);
+			send_event(evw, lm_addr, dram_addr, bins_per_lane, CCONT);
+			// print("sending %lu to %lu, base = %lu", *lm_addr, dram_addr, ptr[BIN_SIZE_START]);
+			// yield_terminate;
+		}
+
+
+
+
+		// send_event(CCONT, 0, IGNRCONT);
+		
+	}
+
+	event sort_post_phase1_per_lane() {
+		// print("in sort_post_phase1_per_lane");
+		unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		unsigned long bins_per_lane = ptr[BINS_PER_LANE];
+		unsigned long* local dram_addr = (NETID - ptr[BASE_LANE]) * bins_per_lane * 8 + ptr[BIN_SIZE_START];
+		unsigned long* local lm_addr = LMBASE + SORT_OFFSET + COUNTERS_OFFSET; 
+		// for (tot = 0; tot < bins_per_lane; tot = tot + 1) {
+		// 	send_dram_write(dram_addr, lm_addr, 1, sort_post_phase1_per_lane_return);
+		// 	dram_addr = dram_addr + 8;
+		// 	// print("sending %d to %lu", *lm_addr, dram_addr);
+		// 	lm_addr = lm_addr + 8;
+		// }
+		unsigned long evw = evw_update_event(CEVNT, MemcpyLib::memcpy_sp_to_dram);
+		send_event(evw, lm_addr, dram_addr, bins_per_lane, CCONT);
+
+		// send_event(CCONT, 0, IGNRCONT);
+		// yield_terminate;
+	}
+
+	event sort_post_phase1_per_lane_return() {
+		// print("in sort_post_phase1_per_lane_return");
+		// tot = tot - 1;
+		if(1) {
+			send_event(CCONT, 0, IGNRCONT);		
+			yield_terminate;
+		}
+	
+	}
+
+
+}
+
+
+thread DistributedSortPhase1 {
+    unsigned long cval;
+	unsigned long bin_idx;
+	
+	event kv_map(unsigned long key, unsigned long val) {
+        unsigned long evw = evw_new(NETID, DistributedSortPhase1::kv_map_emit, 2);
+		unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		unsigned long ikey = key / ptr[BIN_SIZE];
+		// print("ikey = %d", ikey);
+		send_event(evw, ikey, key, CCONT);
+        evw = evw_update_event(CEVNT, DistributedSortPhase1::kv_map_return, 2);
+        send_event(evw, NETID, NETID, CCONT);
+		yield;
+    }
+
+    event kv_reduce(unsigned long key, unsigned long value) {
+		unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		bin_idx = key;
+		// print("getting bin id = %lu, value = %lu, netid = %lu", bin_idx, value, NETID);
+		// print("getting bin id = %lu, value = %lu", bin_idx, value);
+
+		cval = value;
+
+		// unsigned long local_bin_idx = bin_idx % bins_per_lane;
+		// unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+		// // print("receiving value = %d, local_bin_idx = %d", value, local_bin_idx);
+		
+		// unsigned long * local counter_addr = LMBASE + (SORT_OFFSET + COUNTERS_OFFSET) + 8 * local_bin_idx;
+		// unsigned long local_bin_count = *counter_addr;
+		// unsigned long * local dram_addr = ptr[TMP_ADDR] + value / bin_size * dram_block_size + local_bin_count * 8;
+		// send_dram_write(dram_addr, value, DistributedSortPhase1::kv_reduce_return);
+		// *counter_addr = local_bin_count + 1;
+		// // print("local_bin_idx = %d, local_bin_count = %d, dram_addr = %lu", local_bin_idx, local_bin_count, dram_addr);
+		// yield;
+
+		
+        // send_event(evw, 0, IGNRCONT);
+        unsigned long evw = evw_new(NETID, phase1_bin_size_cache::cache_combine_value);
+        // unsigned long cont = evw_update_event(CEVNT, kv_reducer_get_back_from_cache);
+		// unsigned long cont = evw_update_event(CEVNT, sort_phase2_init);
+		unsigned long addone = 1;
+        send_event(evw, bin_idx, addone, kv_reducer_get_back_from_cache);
+		yield;
+    }
+
+	event kv_reducer_get_back_from_cache(unsigned long  key, unsigned long local_bin_count) {
+		// print("getting back from cache %lu %lu, putting %lu", key, local_bin_count, cval);
+		unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		// unsigned long bin_size = ptr[BIN_SIZE];
+		unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+
+		unsigned long * local dram_addr = ptr[TMP_ADDR] + bin_idx * dram_block_size + (local_bin_count - 1) * 8;
+		send_dram_write(dram_addr, cval, DistributedSortPhase1::kv_reduce_return);
+
+        // unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase1::kv_reduce_return);
+
+		// send_event(evw, 0, IGNRCONT);
+	}
+}
+
+
+thread DistributedSortPhase1Insertion {
+    unsigned long cval;
+	unsigned long bin_idx;
+	unsigned long bin_size;
+	// long tot, bin_size;
+	unsigned long* bin_dram_addr;
+	unsigned long* bin_sp_addr;
+	
+	unsigned long save_cont;
+
+	// unsigned long offset;
+
+
+	event kv_map(unsigned long key, unsigned long val) {
+        unsigned long evw = evw_new(NETID, DistributedSortPhase1Insertion::kv_map_emit, 2);
+		unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		unsigned long ikey = key / ptr[BIN_SIZE];
+		// print("ikey = %d", ikey);
+		send_event(evw, ikey, key, CCONT);
+		// print("kv_map_emit %lu %lu", ikey, key);
+        evw = evw_update_event(CEVNT, DistributedSortPhase1Insertion::kv_map_return, 2);
+        send_event(evw, NETID, NETID, CCONT);
+		yield;
+    }
+
+    event kv_reduce(unsigned long key, unsigned long value) {
+		
+		unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		save_cont = CCONT;
+		bin_idx = key;
+		// print("getting bin id = %lu, value = %lu, netid = %lu", bin_idx, value, NETID);
+		// print("getting bin id = %lu, value = %lu", bin_idx, value);
+
+		cval = value;
+
+		// unsigned long local_bin_idx = bin_idx % bins_per_lane;
+		// unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+		// // print("receiving value = %d, local_bin_idx = %d", value, local_bin_idx);
+		
+		// unsigned long * local counter_addr = LMBASE + (SORT_OFFSET + COUNTERS_OFFSET) + 8 * local_bin_idx;
+		// unsigned long local_bin_count = *counter_addr;
+		// unsigned long * local dram_addr = ptr[TMP_ADDR] + value / bin_size * dram_block_size + local_bin_count * 8;
+		// send_dram_write(dram_addr, value, DistributedSortPhase1::kv_reduce_return);
+		// *counter_addr = local_bin_count + 1;
+		// // print("local_bin_idx = %d, local_bin_count = %d, dram_addr = %lu", local_bin_idx, local_bin_count, dram_addr);
+		// yield;
+		
+		// test return
+
+		
+        // send_event(evw, 0, IGNRCONT);
+        unsigned long evw = evw_new(NETID, phase1_bin_size_cache::cache_combine_value);
+        // unsigned long cont = evw_update_event(CEVNT, kv_reducer_get_back_from_cache);
+		// unsigned long cont = evw_update_event(CEVNT, sort_phase2_init);
+		
+		// evw = evw_update_event(CEVNT, DistributedSortPhase1Insertion::kv_reduce_return);
+		// send_event(evw, 0, CCONT);
+		// yield;
+		
+		unsigned long addone = 1;
+        send_event(evw, bin_idx, addone, kv_reducer_get_back_from_cache);
+		yield;
+    }
+
+	event kv_reducer_get_back_from_cache(unsigned long  key, unsigned long local_bin_count) {
+		// print("getting back from cache %lu %lu", key, local_bin_count);
+		bin_size = local_bin_count - 1;
+		// print("getting back from cache %lu %lu, putting %lu", key, local_bin_count, cval);
+		unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		// unsigned long bin_size = ptr[BIN_SIZE];
+		unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+
+		unsigned long* local tmp_bin_dram_addr =  ptr[TMP_ADDR] + bin_idx * ptr[DRAM_BLOCK_SIZE];
+		bin_dram_addr = tmp_bin_dram_addr;
+		// add space for cache
+		unsigned long* local data_sp_ptr = LMBASE + (SORT_OFFSET + VAR_SIZE) + 8 * 2 * 64;
+		bin_sp_addr = data_sp_ptr;
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_sp);
+		send_event(evw, bin_dram_addr, data_sp_ptr, bin_size, kv_reduce_load_sp_return);
+
+		// bin_dram_addr = tmp_bin_dram_addr; 
+		// bin_size = local_bin_count;
+	}
+
+	
+	event kv_reduce_load_sp_return() {
+		unsigned long* local data_sp_ptr = bin_sp_addr;
+		for (int i = 0; i < bin_size; i = i + 1) {
+			if (cval < data_sp_ptr[i]) {
+				unsigned long x = data_sp_ptr[i];
+				data_sp_ptr[i] = cval;
+				cval = x;
+			}
+		}
+		data_sp_ptr[bin_size] = cval;
+		bin_size = bin_size + 1;
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_sp_to_dram);
+		// print("returning with size : %lu", bin_size);
+		send_event(evw, bin_sp_addr, bin_dram_addr, bin_size, kv_reduce_store_sp_return);
+	}	
+	
+	event kv_reduce_store_sp_return() {
+		// print("returning to sp return");
+		// send_event(save_cont, 0, IGNRCONT);
+		unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase1Insertion::kv_reduce_return);
+		send_event(evw, 0, save_cont);
+		yield;
+	}
+}
+
+thread DistributedSortPhase1InsertionLb {
+    unsigned long cval;
+	unsigned long bin_idx;
+	unsigned long bin_size;
+	// long tot, bin_size;
+	unsigned long* bin_dram_addr;
+	unsigned long* bin_sp_addr;
+	
+	unsigned long save_cont;
+
+	// unsigned long offset;
+
+
+	event kv_map(unsigned long key, unsigned long val) {
+        unsigned long evw = evw_new(NETID, DistributedSortPhase1InsertionLb::kv_map_emit, 2);
+		unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		unsigned long ikey = key / ptr[BIN_SIZE];
+		// print("insertion = %d", ikey);
+		send_event(evw, ikey, key, CCONT);
+		// print("kv_map_emit %lu %lu", ikey, key);
+        evw = evw_update_event(CEVNT, DistributedSortPhase1InsertionLb::kv_map_return, 2);
+        send_event(evw, NETID, NETID, CCONT);
+		yield;
+    }
+
+    event kv_reduce(unsigned long key, unsigned long value) {
+		// print("kv_reduce_start %lu %lu with cont %lu", key, value, CCONT);
+		unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		save_cont = CCONT;
+		bin_idx = key;
+		// print("getting bin id = %lu, value = %lu, netid = %lu", bin_idx, value, NETID);
+		// print("getting bin id = %lu, value = %lu", bin_idx, value);
+
+		cval = value;
+
+		// unsigned long local_bin_idx = bin_idx % bins_per_lane;
+		// unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+		// // print("receiving value = %d, local_bin_idx = %d", value, local_bin_idx);
+		
+		// unsigned long * local counter_addr = LMBASE + (SORT_OFFSET + COUNTERS_OFFSET) + 8 * local_bin_idx;
+		// unsigned long local_bin_count = *counter_addr;
+		// unsigned long * local dram_addr = ptr[TMP_ADDR] + value / bin_size * dram_block_size + local_bin_count * 8;
+		// send_dram_write(dram_addr, value, DistributedSortPhase1::kv_reduce_return);
+		// *counter_addr = local_bin_count + 1;
+		// // print("local_bin_idx = %d, local_bin_count = %d, dram_addr = %lu", local_bin_idx, local_bin_count, dram_addr);
+		// yield;
+		
+		// test return
+
+		
+        // send_event(evw, 0, IGNRCONT);
+        unsigned long evw = evw_new(NETID, phase1_bin_size_cache::cache_combine_value);
+		// print("sending out to %lx", evw);
+        // unsigned long cont = evw_update_event(CEVNT, kv_reducer_get_back_from_cache);
+		// unsigned long cont = evw_update_event(CEVNT, sort_phase2_init);
+		
+		// evw = evw_update_event(CEVNT, DistributedSortPhase1Insertion::kv_reduce_return);
+		// send_event(evw, 0, CCONT);
+		// yield;
+		
+		unsigned long addone = 1;
+        send_event(evw, bin_idx, addone, kv_reducer_get_back_from_cache);
+		// print("kv_reduce_end %lu %lu", key, value);
+
+		yield;
+    }
+
+	event kv_reducer_get_back_from_cache(unsigned long  key, unsigned long local_bin_count) {
+		// print("getting back from cache %lu %lu", key, local_bin_count);
+		bin_size = local_bin_count - 1;
+		// print("getting back from cache %lu %lu, putting %lu", key, local_bin_count, cval);
+		unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		// unsigned long bin_size = ptr[BIN_SIZE];
+		unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+
+		unsigned long* local tmp_bin_dram_addr =  ptr[TMP_ADDR] + bin_idx * ptr[DRAM_BLOCK_SIZE];
+		bin_dram_addr = tmp_bin_dram_addr;
+		// add space for cache
+		unsigned long* local data_sp_ptr = LMBASE + (SORT_OFFSET + VAR_SIZE) + 8 * 2 * 64;
+		bin_sp_addr = data_sp_ptr;
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_sp);
+		send_event(evw, bin_dram_addr, data_sp_ptr, bin_size, kv_reduce_load_sp_return);
+
+		// print("kv_reduce_end2");
+
+		// bin_dram_addr = tmp_bin_dram_addr; 
+		// bin_size = local_bin_count;
+	}
+
+	
+	event kv_reduce_load_sp_return() {
+		unsigned long* local data_sp_ptr = bin_sp_addr;
+		for (int i = 0; i < bin_size; i = i + 1) {
+			if (cval < data_sp_ptr[i]) {
+				unsigned long x = data_sp_ptr[i];
+				data_sp_ptr[i] = cval;
+				cval = x;
+			}
+		}
+		data_sp_ptr[bin_size] = cval;
+		bin_size = bin_size + 1;
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_sp_to_dram);
+		// print("returning with size : %lu", bin_size);
+		send_event(evw, bin_sp_addr, bin_dram_addr, bin_size, kv_reduce_store_sp_return);
+		// print("kv_reduce_end3");
+
+	}	
+	
+	event kv_reduce_store_sp_return() {
+		// print("returning to sp return");
+		// send_event(save_cont, 0, IGNRCONT);
+		unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase1InsertionLb::kv_reduce_return);
+		send_event(evw, 0, save_cont);
+		// print("kv_reduce_store_sp_return %lu", save_cont);
+		yield;
+	}
+}
+
+
+thread DistributedSortPhase2 {
+	long tot, bin_size;
+	unsigned long* bin_dram_addr;
+	unsigned long save_cont;
+
+	unsigned long offset;
+	unsigned long local_space_bit;
+    event kv_map(unsigned long key, unsigned long val) {
+		// print("<kv_map2> getting key = %lu, value = %lu", key, val);
+        unsigned long evw = evw_new(NETID, DistributedSortPhase2::kv_map_emit, 2);
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		// unsigned long ikey = key / ptr[BKSIZE];
+		// print("ikey = %d", ikey);
+		// send_event(evw, val, key, val, CCONT);
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_lane_id = (val - sptr[BIN_SIZE_START]) / 8 / sptr[BINS_PER_LANE]; 
+		// print("bin_lane_id = %lu", bin_lane_id);
+		// send_event(evw, val / 8, key, val, CCONT);
+		send_event(evw, bin_lane_id, key, val, CCONT);
+        evw = evw_update_event(CEVNT, DistributedSortPhase2::kv_map_return, 2);
+        send_event(evw, NETID, NETID, CCONT);
+		yield;
+    }
+
+	// event kv_map(unsigned long key, unsigned long val) {
+	// 	print("<kv_map2> getting key = %lu, value = %lu", key, val);
+    //     unsigned long evw = evw_new(NETID, DistributedSortPhase2::kv_map_emit, 2);
+	// 	// unsigned long* local ptr = LMBASE + SORT_OFFSET;
+	// 	// unsigned long ikey = key / ptr[BKSIZE];
+	// 	// print("ikey = %d", ikey);
+	// 	// send_event(evw, val, key, val, CCONT);
+	// 	send_event(evw, val / 8, key, val, CCONT);
+    //     evw = evw_update_event(CEVNT, DistributedSortPhase2::kv_map_return, 2);
+    //     send_event(evw, NETID, NETID, CCONT);
+	// 	yield;
+    // }
+
+    event kv_reduce(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+		// print("receiving %lu %lu %lu", ikey, bin_list_size, bin_addr);
+		unsigned long evw;
+		// print("bin_list_size = %lu", bin_list_size * 8);
+		// unsigned long cur_size = bin_list_size * 8;
+
+		if (bin_list_size == 0) {
+			evw = evw_update_event(CEVNT, DistributedSortPhase2::kv_reduce_return);
+			send_event(evw, 0, CCONT);
+			yield;
+		}
+
+
+		// allocate space in scratchpad
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		int bitmap = sptr[LANE_SPACE_BITMAP];
+		local_space_bit = 0;
+		while(bitmap >> local_space_bit & 1) {
+			local_space_bit = local_space_bit + 1;
+		}
+		bitmap = bitmap | (1 << local_space_bit);
+		sptr[LANE_SPACE_BITMAP] = bitmap;
+
+		if (bin_list_size <= SP_BLOCKSIZE) {
+			// print("getting bit = %d for local sort at NWID %lu", local_space_bit, NETID);
+
+			evw = evw_update_event(CEVNT, DistributedSortPhase2::local_bin_sort, 3);
+		} else {
+			// print("getting bit = %d for ext merge sort at NWID %lu", local_space_bit, NETID);
+
+			// print("bin_list_size = %lu", bin_list_size);
+			evw = evw_update_event(CEVNT, DistributedSortPhase2::ext_merge_sort, 3);
+		}
+
+
+		unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+		send_buffer[0] = ikey;
+		send_buffer[1] = bin_list_size;
+		send_buffer[2] = bin_addr;
+		send_buffer[3] = LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		send_event(evw, send_buffer, 4, CCONT);
+
+		save_cont = CCONT;
+		
+		// send_event(evw, ikey, bin_list_size, bin_addr, CCONT);
+		yield;
+		// unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		// unsigned long bin_size = ptr[BIN_SIZE];
+		// unsigned long bins_per_lane = ptr[BINS_PER_LANE];
+		// unsigned long local_bin_idx = value / bin_size % bins_per_lane;
+		// unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+		// print("receiving value = %d, local_bin_idx = %d", value, local_bin_idx);
+		
+		// unsigned long * local counter_addr = LMBASE + (SORT_OFFSET + COUNTERS_OFFSET) + 8 * local_bin_idx;
+		// unsigned long local_bin_count = *counter_addr;
+		// unsigned long * local dram_addr = ptr[TMP_ADDR] + value / bin_size * dram_block_size + local_bin_count * 8;
+		// send_dram_write(dram_addr, value, DistributedSortPhase2::kv_reduce_return);
+		// *counter_addr = local_bin_count + 1;
+		// print("%lu", counter_addr);
+		// print("local_bin_idx = %d, local_bin_count = %d, dram_addr = %lu", local_bin_idx, local_bin_count, dram_addr);
+		// yield;
+		// print("d", local_bin_idx);
+
+		// print("receiving %d %d, local_bin_idx = %d", key, value, local_bin_idx);
+
+        // unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2::kv_reduce_return, 2);
+        // // unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase1::kv_combine, 2);
+        // send_event(evw, 0, IGNRCONT);
+    }
+
+	// event ext_merge_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+	event ext_merge_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr, unsigned long *ptr) {
+		print("in ext_merge_sort, bin_size = %lu", bin_list_size);
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET + VAR_SIZE;
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_id = (bin_addr - sptr[BIN_SIZE_START]) / 8;
+		unsigned long* local tmp_bin_dram_addr =  sptr[TMP_ADDR] + bin_id * sptr[DRAM_BLOCK_SIZE];
+		bin_dram_addr = tmp_bin_dram_addr; 
+		bin_size = bin_list_size;
+		unsigned long evw = evw_new(NETID, ExternalMergeSort::sort);
+		unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+		send_buffer[0] = bin_dram_addr;
+		send_buffer[1] = bin_size;
+		send_buffer[2] = ptr;
+		// unsigned long bk_size = SP_BLOCKSIZE;
+		send_buffer[3] = SP_BLOCKSIZE;
+
+		send_event(evw, send_buffer, 4, kv_reduce_ext_sort_ret);
+		// yield;
+	}
+
+	event local_bin_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr, unsigned long *ptr) {
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET + VAR_SIZE;
+		print("in local_bin_sort, bin_size = %lu", bin_list_size);
+
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_id = (bin_addr - sptr[BIN_SIZE_START]) / 8;
+		unsigned long* local tmp_bin_dram_addr =  sptr[TMP_ADDR] + bin_id * sptr[DRAM_BLOCK_SIZE];
+		// print("starting sorting bin %d", NETID);
+
+		bin_dram_addr = tmp_bin_dram_addr; 
+		// print("bin_id = %lu", bin_id);
+		offset = ptr - bin_dram_addr;
+		// print("sorting bin from dram: %lu, bin_size = %lu", bin_dram_addr, bin_list_size);
+		// if(NETID == 60) {
+		// 		sptr =  LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		// 		for (int i = 0; i < bin_list_size; i = i + 1) {
+		// 			print("begin sort60, having %lu", sptr[i]);
+		// 		}
+		// }
+		// for (tot = 0; tot < bin_list_size; tot = tot + 1) {
+		// 	send_dram_read(bin_dram_addr, 1, DistributedSortPhase2::kv_reduce_load_ret);
+		// 	bin_dram_addr = bin_dram_addr + 8;
+		// }
+		// asm {"perflog 1 0 '[NWID %lu] start sorting bin' X0" };
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_sp);
+		send_event(evw, bin_dram_addr, ptr, bin_list_size, kv_reduce_load_ret);
+
+		bin_dram_addr = tmp_bin_dram_addr; 
+		bin_size = bin_list_size;
+	}
+
+	event kv_reduce_load_ret() {
+		// print("loading %d %lu", key, addr);
+		// unsigned long* local lm_ptr = addr + offset;
+		// *lm_ptr = key;
+		// tot = tot - 1;
+		if(1) {
+			// asm {"perflog 1 0 '[NWID %lu] loadfinish sorting bin' X0" };
+			// start a new thread for sort?
+
+			unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2LocalSort::init);
+			unsigned long cont = evw_update_event(CEVNT, kv_reduce_sort_ret);
+			send_event(evw, bin_size, LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8, cont);
+		} else {
+			if(tot < 0) {
+				print("tot < 0");
+			}
+		}
+	}
+
+	event kv_reduce_sort_ret() {
+		// print("in kv_reduce_sort_ret");
+		unsigned long* local lm_ptr = LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		bin_dram_addr = lm_ptr - offset;
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_sp_to_dram);
+		send_event(evw, lm_ptr, bin_dram_addr, bin_size, kv_reduce_sort_send_back_ret);
+		// asm {"perflog 1 0 '[NWID %lu] sortfinish sorting bin' X0" };
+
+		// for (tot = 0; tot < bin_size; tot = tot + 1) {
+		// 	send_dram_write(bin_dram_addr, lm_ptr, 1, kv_reduce_sort_send_back_ret);
+		// 	bin_dram_addr = bin_dram_addr + 8;
+		// 	lm_ptr = lm_ptr + 8;
+		// }
+	
+	}
+
+	event kv_reduce_sort_send_back_ret() {
+		// tot = tot - 1;
+		if(1) {
+			// print("sended back sorted bin to dram: %lu, bin_size = %lu", bin_dram_addr, bin_size);
+			// asm {"perflog 1 0 '[NWID %lu] storefinish sorting bin' X0" };
+
+			unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2::kv_reduce_return);
+			send_event(evw, 0, save_cont);
+			// send_event(evw, 0, IGNRCONT);
+
+
+			// clear the current bit
+			unsigned long* local sptr = LMBASE + SORT_OFFSET;
+			int bitmap = sptr[LANE_SPACE_BITMAP];
+			bitmap = bitmap ^ (1 << local_space_bit);
+			sptr[LANE_SPACE_BITMAP] = bitmap;
+
+		} else {
+			if(tot < 0) {
+				print("tot < 0");
+			}
+		}
+
+	}
+
+	event kv_reduce_ext_sort_ret() {
+		// asm {"perflog 1 0 '[NWID %lu] end sorting bin' X0" };
+
+		unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2::kv_reduce_return);
+		send_event(evw, 0, save_cont);
+		// send_event(evw, 0, IGNRCONT);
+
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		int bitmap = sptr[LANE_SPACE_BITMAP];
+		bitmap = bitmap ^ (1 << local_space_bit);
+		sptr[LANE_SPACE_BITMAP] = bitmap;
+	}
+	
+
+}
+
+
+
+thread DistributedSortPhase2Mapper {
+	long tot, bin_size;
+	unsigned long* bin_dram_addr;
+	unsigned long save_cont;
+
+	unsigned long offset;
+	unsigned long local_space_bit;
+    event kv_map(unsigned long key, unsigned long val) {
+		unsigned long evw;
+		save_cont = CCONT;
+
+		// evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_map_return);
+		// print("skipping3");
+		// send_event(evw, 0, save_cont);
+		// yield;
+
+		// print("<adsdsaicoxshui> getting key = %lu, value = %lu", key, val);
+        evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_map_cont, 3);
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		// unsigned long ikey = key / ptr[BKSIZE];
+		// print("ikey = %d", ikey);
+		// send_event(evw, val, key, val, CCONT);
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_lane_id = (val - sptr[BIN_SIZE_START]) / 8 / sptr[BINS_PER_LANE]; 
+		// print("bin_lane_id = %lu", bin_lane_id);
+		// send_event(evw, val / 8, key, val, CCONT);
+		send_event(evw, bin_lane_id, key, val, CCONT);
+		unsigned long ikey = bin_lane_id;
+		unsigned long bin_list_size = key;
+		unsigned long bin_addr = val;
+		
+        // evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_map_return, 2);
+        // send_event(evw, NETID, NETID, CCONT);
+
+		
+		yield;
+    }
+
+	// // event kv_map(unsigned long key, unsigned long val) {
+	// // 	print("<kv_map2> getting key = %lu, value = %lu", key, val);
+    // //     unsigned long evw = evw_new(NETID, DistributedSortPhase2Mapper::kv_map_emit, 2);
+	// // 	// unsigned long* local ptr = LMBASE + SORT_OFFSET;
+	// // 	// unsigned long ikey = key / ptr[BKSIZE];
+	// // 	// print("ikey = %d", ikey);
+	// // 	// send_event(evw, val, key, val, CCONT);
+	// // 	send_event(evw, val / 8, key, val, CCONT);
+    // //     evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_map_return, 2);
+    // //     send_event(evw, NETID, NETID, CCONT);
+	// // 	yield;
+    // // }
+
+
+    event kv_map_cont(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+		print("receiving %lu %lu %lu", ikey, bin_list_size, bin_addr);
+		unsigned long evw;
+		// print("bin_list_size = %lu", bin_list_size * 8);
+		// unsigned long cur_size = bin_list_size * 8;
+		// evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_map_return);
+		// print("skipping2");
+		// send_event(evw, NETID, NETID, save_cont);
+
+		// yield;
+
+		if (bin_list_size == 0) {
+			evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_map_return);
+			send_event(evw, 0, CCONT);
+			yield;
+		}
+
+
+		// allocate space in scratchpad
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		int bitmap = sptr[LANE_SPACE_BITMAP];
+		local_space_bit = 0;
+		while(bitmap >> local_space_bit & 1) {
+			local_space_bit = local_space_bit + 1;
+		}
+		bitmap = bitmap | (1 << local_space_bit);
+		sptr[LANE_SPACE_BITMAP] = bitmap;
+
+		if (bin_list_size <= SP_BLOCKSIZE) {
+			// print("getting bit = %d for local sort at NWID %lu", local_space_bit, NETID);
+
+			evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::local_bin_sort, 3);
+		} else {
+			// print("getting bit = %d for ext merge sort at NWID %lu", local_space_bit, NETID);
+
+			// print("bin_list_size = %lu", bin_list_size);
+			evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::ext_merge_sort, 3);
+		}
+
+
+		unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+		send_buffer[0] = ikey;
+		send_buffer[1] = bin_list_size;
+		send_buffer[2] = bin_addr;
+		send_buffer[3] = LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		send_event(evw, send_buffer, 4, CCONT);
+
+		
+		// send_event(evw, ikey, bin_list_size, bin_addr, CCONT);
+		yield;
+		// unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		// unsigned long bin_size = ptr[BIN_SIZE];
+		// unsigned long bins_per_lane = ptr[BINS_PER_LANE];
+		// unsigned long local_bin_idx = value / bin_size % bins_per_lane;
+		// unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+		// print("receiving value = %d, local_bin_idx = %d", value, local_bin_idx);
+		
+		// unsigned long * local counter_addr = LMBASE + (SORT_OFFSET + COUNTERS_OFFSET) + 8 * local_bin_idx;
+		// unsigned long local_bin_count = *counter_addr;
+		// unsigned long * local dram_addr = ptr[TMP_ADDR] + value / bin_size * dram_block_size + local_bin_count * 8;
+		// send_dram_write(dram_addr, value, DistributedSortPhase2Mapper::kv_reduce_return);
+		// *counter_addr = local_bin_count + 1;
+		// print("%lu", counter_addr);
+		// print("local_bin_idx = %d, local_bin_count = %d, dram_addr = %lu", local_bin_idx, local_bin_count, dram_addr);
+		// yield;
+		// print("d", local_bin_idx);
+
+		// print("receiving %d %d, local_bin_idx = %d", key, value, local_bin_idx);
+
+        // unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_reduce_return, 2);
+        // // unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase1::kv_combine, 2);
+        // send_event(evw, 0, IGNRCONT);
+    }
+
+
+	
+    event kv_reduce(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+		yield;
+	}
+
+	// event ext_merge_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+	event ext_merge_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr, unsigned long *ptr) {
+		print("in ext_merge_sort, bin_size = %lu", bin_list_size);
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET + VAR_SIZE;
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_id = (bin_addr - sptr[BIN_SIZE_START]) / 8;
+		unsigned long* local tmp_bin_dram_addr =  sptr[TMP_ADDR] + bin_id * sptr[DRAM_BLOCK_SIZE];
+		bin_dram_addr = tmp_bin_dram_addr; 
+		bin_size = bin_list_size;
+		unsigned long evw = evw_new(NETID,  ExternalMergeSort::sort);
+		unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+		send_buffer[0] = bin_dram_addr;
+		send_buffer[1] = bin_size;
+		send_buffer[2] = ptr;
+		// unsigned long bk_size = SP_BLOCKSIZE;
+		send_buffer[3] = SP_BLOCKSIZE;
+
+		send_event(evw, send_buffer, 4, kv_reduce_ext_sort_ret);
+		// yield;
+	}
+
+	event local_bin_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr, unsigned long *ptr) {
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET + VAR_SIZE; 
+		print("in local_bin_sort, bin_size = %lu", bin_list_size);
+
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_id = (bin_addr - sptr[BIN_SIZE_START]) / 8;
+		unsigned long* local tmp_bin_dram_addr =  sptr[TMP_ADDR] + bin_id * sptr[DRAM_BLOCK_SIZE];
+		// print("starting sorting bin %d", NETID);
+
+		bin_dram_addr = tmp_bin_dram_addr; 
+		// print("bin_id = %lu", bin_id);
+		offset = ptr - bin_dram_addr;
+		// print("sorting bin from dram: %lu, bin_size = %lu", bin_dram_addr, bin_list_size);
+		// if(NETID == 60) {
+		// 		sptr =  LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		// 		for (int i = 0; i < bin_list_size; i = i + 1) {
+		// 			print("begin sort60, having %lu", sptr[i]);
+		// 		}
+		// }
+		// for (tot = 0; tot < bin_list_size; tot = tot + 1) {
+		// 	send_dram_read(bin_dram_addr, 1, DistributedSortPhase2Mapper::kv_reduce_load_ret);
+		// 	bin_dram_addr = bin_dram_addr + 8;
+		// }
+		// asm {"perflog 1 0 '[NWID %lu] start sorting bin' X0" };
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_sp);
+		send_event(evw, bin_dram_addr, ptr, bin_list_size, kv_reduce_load_ret);
+
+		bin_dram_addr = tmp_bin_dram_addr; 
+		bin_size = bin_list_size;
+	}
+
+	event kv_reduce_load_ret() {
+		// print("loading %d %lu", key, addr);
+		// unsigned long* local lm_ptr = addr + offset;
+		// *lm_ptr = key;
+		// tot = tot - 1;
+		if(1) {
+			// asm {"perflog 1 0 '[NWID %lu] loadfinish sorting bin' X0" };
+			// start a new thread for sort?
+
+			unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2LocalSort::init);
+			unsigned long cont = evw_update_event(CEVNT, kv_reduce_sort_ret);
+			send_event(evw, bin_size, LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8, cont);
+		} else {
+			if(tot < 0) {
+				print("tot < 0");
+			}
+		}
+	}
+
+	event kv_reduce_sort_ret() {
+		// print("in kv_reduce_sort_ret");
+		unsigned long* local lm_ptr = LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		bin_dram_addr = lm_ptr - offset;
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_sp_to_dram);
+		send_event(evw, lm_ptr, bin_dram_addr, bin_size, kv_reduce_sort_send_back_ret);
+		// asm {"perflog 1 0 '[NWID %lu] sortfinish sorting bin' X0" };
+
+		// for (tot = 0; tot < bin_size; tot = tot + 1) {
+		// 	send_dram_write(bin_dram_addr, lm_ptr, 1, kv_reduce_sort_send_back_ret);
+		// 	bin_dram_addr = bin_dram_addr + 8;
+		// 	lm_ptr = lm_ptr + 8;
+		// }
+	
+	}
+
+	event kv_reduce_sort_send_back_ret() {
+		// tot = tot - 1;
+		if(1) {
+			// print("sended back sorted bin to dram: %lu, bin_size = %lu", bin_dram_addr, bin_size);
+			// asm {"perflog 1 0 '[NWID %lu] storefinish sorting bin' X0" };
+
+			unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_map_return);
+			send_event(evw, 0, save_cont);
+			// send_event(evw, 0, IGNRCONT);
+
+
+			// clear the current bit
+			unsigned long* local sptr = LMBASE + SORT_OFFSET;
+			int bitmap = sptr[LANE_SPACE_BITMAP];
+			bitmap = bitmap ^ (1 << local_space_bit);
+			sptr[LANE_SPACE_BITMAP] = bitmap;
+
+		} else {
+			if(tot < 0) {
+				print("tot < 0");
+			}
+		}
+
+	}
+
+	event kv_reduce_ext_sort_ret() {
+		// asm {"perflog 1 0 '[NWID %lu] end sorting bin' X0" };
+
+		// unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_reduce_return);
+		unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_map_return);
+		send_event(evw, 0, save_cont);
+		// send_event(evw, 0, IGNRCONT);
+
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		int bitmap = sptr[LANE_SPACE_BITMAP];
+		bitmap = bitmap ^ (1 << local_space_bit);
+		sptr[LANE_SPACE_BITMAP] = bitmap;
+	}
+	
+
+}
+
+thread DistributedSortPhase2Lb {
+	long tot, bin_size;
+	unsigned long* bin_dram_addr;
+	unsigned long save_cont;
+
+	unsigned long offset;
+	unsigned long local_space_bit;
+    // event kv_map(unsigned long key, unsigned long val) {
+		// // print("<kv_map2> getting key = %lu, value = %lu", key, val);
+    //     unsigned long evw = evw_new(NETID, DistributedSortPhase2Lb::kv_map_emit, 2);
+		// // unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		// // unsigned long ikey = key / ptr[BKSIZE];
+		// // print("ikey = %d", ikey);
+		// // send_event(evw, val, key, val, CCONT);
+		// send_event(evw, val / 8, key, val, CCONT);
+    //     evw = evw_update_event(CEVNT, DistributedSortPhase2Lb::kv_map_return, 2);
+    //     send_event(evw, NETID, NETID, CCONT);
+		// yield;
+    // }
+
+    event kv_map(unsigned long key, unsigned long val) {
+		// print("<kv_map2> getting key = %lu, value = %lu", key, val);
+        unsigned long evw = evw_new(NETID, DistributedSortPhase2Lb::kv_map_emit, 2);
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		// unsigned long ikey = key / ptr[BKSIZE];
+		// print("ikey = %d", ikey);
+		// send_event(evw, val, key, val, CCONT);
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_lane_id = (val - sptr[BIN_SIZE_START]) / 8 / sptr[BINS_PER_LANE]; 
+		// print("bin_lane_id = %lu", bin_lane_id);
+		// send_event(evw, val / 8, key, val, CCONT);
+		send_event(evw, bin_lane_id, key, val, CCONT);
+        evw = evw_update_event(CEVNT, DistributedSortPhase2Lb::kv_map_return, 2);
+        send_event(evw, NETID, NETID, CCONT);
+		yield;
+    }
+	
+    event kv_reduce(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+		// print("receiving %lu %lu %lu", ikey, bin_list_size, bin_addr);
+		unsigned long evw;
+		// TODO: need to manage scratchpad
+		// print("bin_list_size = %lu", bin_list_size * 8);
+		// unsigned long cur_size = bin_list_size * 8;
+
+		if (bin_list_size == 0) {
+			evw = evw_update_event(CEVNT, DistributedSortPhase2Lb::kv_reduce_return);
+			send_event(evw, 0, CCONT);
+			yield;
+		}
+
+		// print("%lu trying to sort bin with size %lu", NETID, bin_list_size);
+
+		// allocate space in scratchpad
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		int bitmap = sptr[LANE_SPACE_BITMAP];
+		local_space_bit = 0;
+		while(bitmap >> local_space_bit & 1) {
+			local_space_bit = local_space_bit + 1;
+		}
+		bitmap = bitmap | (1 << local_space_bit);
+		sptr[LANE_SPACE_BITMAP] = bitmap;
+
+		if (bin_list_size <= SP_BLOCKSIZE) {
+			// print("getting bit = %d for local sort at NWID %lu", local_space_bit, NETID);
+
+			evw = evw_update_event(CEVNT, DistributedSortPhase2Lb::local_bin_sort, 3);
+		} else {
+			// print("getting bit = %d for ext merge sort at NWID %lu", local_space_bit, NETID);
+
+			// print("bin_list_size = %lu", bin_list_size);
+			evw = evw_update_event(CEVNT, DistributedSortPhase2Lb::ext_merge_sort, 3);
+		}
+
+
+		unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+		send_buffer[0] = ikey;
+		send_buffer[1] = bin_list_size;
+		send_buffer[2] = bin_addr;
+		send_buffer[3] = LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		send_event(evw, send_buffer, 4, CCONT);
+
+		save_cont = CCONT;
+		
+		// send_event(evw, ikey, bin_list_size, bin_addr, CCONT);
+		yield;
+		// unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		// unsigned long bin_size = ptr[BIN_SIZE];
+		// unsigned long bins_per_lane = ptr[BINS_PER_LANE];
+		// unsigned long local_bin_idx = value / bin_size % bins_per_lane;
+		// unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+		// print("receiving value = %d, local_bin_idx = %d", value, local_bin_idx);
+		
+		// unsigned long * local counter_addr = LMBASE + (SORT_OFFSET + COUNTERS_OFFSET) + 8 * local_bin_idx;
+		// unsigned long local_bin_count = *counter_addr;
+		// unsigned long * local dram_addr = ptr[TMP_ADDR] + value / bin_size * dram_block_size + local_bin_count * 8;
+		// send_dram_write(dram_addr, value, DistributedSortPhase2Lb::kv_reduce_return);
+		// *counter_addr = local_bin_count + 1;
+		// print("%lu", counter_addr);
+		// print("local_bin_idx = %d, local_bin_count = %d, dram_addr = %lu", local_bin_idx, local_bin_count, dram_addr);
+		// yield;
+		// print("d", local_bin_idx);
+
+		// print("receiving %d %d, local_bin_idx = %d", key, value, local_bin_idx);
+
+        // unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2Lb::kv_reduce_return, 2);
+        // // unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase1::kv_combine, 2);
+        // send_event(evw, 0, IGNRCONT);
+    }
+
+	// event ext_merge_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+	event ext_merge_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr, unsigned long *ptr) {
+		print("in ext_merge_sort, bin_size = %lu", bin_list_size);
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET + VAR_SIZE;
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_id = (bin_addr - sptr[BIN_SIZE_START]) / 8;
+		unsigned long* local tmp_bin_dram_addr =  sptr[TMP_ADDR] + bin_id * sptr[DRAM_BLOCK_SIZE];
+		bin_dram_addr = tmp_bin_dram_addr; 
+		bin_size = bin_list_size;
+		unsigned long evw = evw_new(NETID, ExternalMergeSort::sort);
+		unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+		send_buffer[0] = bin_dram_addr;
+		send_buffer[1] = bin_size;
+		send_buffer[2] = ptr;
+		// unsigned long bk_size = SP_BLOCKSIZE;
+		send_buffer[3] = SP_BLOCKSIZE;
+
+		send_event(evw, send_buffer, 4, kv_reduce_ext_sort_ret);
+		// yield;
+	}
+
+	event local_bin_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr, unsigned long *ptr) {
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET + VAR_SIZE;
+		print("in local_bin_sort, bin_size = %lu", bin_list_size);
+
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_id = (bin_addr - sptr[BIN_SIZE_START]) / 8;
+		unsigned long* local tmp_bin_dram_addr =  sptr[TMP_ADDR] + bin_id * sptr[DRAM_BLOCK_SIZE];
+		// print("starting sorting bin %d", NETID);
+
+		bin_dram_addr = tmp_bin_dram_addr; 
+		// print("bin_id = %lu", bin_id);
+		offset = ptr - bin_dram_addr;
+		// print("sorting bin from dram: %lu, bin_size = %lu", bin_dram_addr, bin_list_size);
+		// if(NETID == 60) {
+		// 		sptr =  LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		// 		for (int i = 0; i < bin_list_size; i = i + 1) {
+		// 			print("begin sort60, having %lu", sptr[i]);
+		// 		}
+		// }
+		// for (tot = 0; tot < bin_list_size; tot = tot + 1) {
+		// 	send_dram_read(bin_dram_addr, 1, DistributedSortPhase2Lb::kv_reduce_load_ret);
+		// 	bin_dram_addr = bin_dram_addr + 8;
+		// }
+		// asm {"perflog 1 0 '[NWID %lu] start sorting bin' X0" };
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_sp);
+		send_event(evw, bin_dram_addr, ptr, bin_list_size, kv_reduce_load_ret);
+
+		bin_dram_addr = tmp_bin_dram_addr; 
+		bin_size = bin_list_size;
+	}
+
+	event kv_reduce_load_ret() {
+		// print("loading %d %lu", key, addr);
+		// unsigned long* local lm_ptr = addr + offset;
+		// *lm_ptr = key;
+		// tot = tot - 1;
+		if(1) {
+			// asm {"perflog 1 0 '[NWID %lu] loadfinish sorting bin' X0" };
+			// start a new thread for sort?
+
+			unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2LocalSort::init);
+			unsigned long cont = evw_update_event(CEVNT, kv_reduce_sort_ret);
+			send_event(evw, bin_size, LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8, cont);
+		} else {
+			if(tot < 0) {
+				print("tot < 0");
+			}
+		}
+	}
+
+	event kv_reduce_sort_ret() {
+		// print("in kv_reduce_sort_ret");
+		unsigned long* local lm_ptr = LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		bin_dram_addr = lm_ptr - offset;
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_sp_to_dram);
+		send_event(evw, lm_ptr, bin_dram_addr, bin_size, kv_reduce_sort_send_back_ret);
+		// // asm {"perflog 1 0 '[NWID %lu] sortfinish sorting bin' X0" };
+
+		// for (tot = 0; tot < bin_size; tot = tot + 1) {
+		// 	send_dram_write(bin_dram_addr, lm_ptr, 1, kv_reduce_sort_send_back_ret);
+		// 	bin_dram_addr = bin_dram_addr + 8;
+		// 	lm_ptr = lm_ptr + 8;
+		// }
+	
+	}
+
+	event kv_reduce_sort_send_back_ret() {
+		// tot = tot - 1;
+		if(1) {
+			// print("sended back sorted bin to dram: %lu, bin_size = %lu", bin_dram_addr, bin_size);
+			// asm {"perflog 1 0 '[NWID %lu] storefinish sorting bin' X0" };
+
+			unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2Lb::kv_reduce_return);
+			send_event(evw, 0, save_cont);
+			// send_event(evw, 0, IGNRCONT);
+
+
+			// clear the current bit
+			unsigned long* local sptr = LMBASE + SORT_OFFSET;
+			int bitmap = sptr[LANE_SPACE_BITMAP];
+			bitmap = bitmap ^ (1 << local_space_bit);
+			sptr[LANE_SPACE_BITMAP] = bitmap;
+
+		} else {
+			if(tot < 0) {
+				print("tot < 0");
+			}
+		}
+
+	}
+
+	event kv_reduce_ext_sort_ret() {
+		// asm {"perflog 1 0 '[NWID %lu] end sorting bin' X0" };
+
+		unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2Lb::kv_reduce_return);
+		send_event(evw, 0, save_cont);
+		// send_event(evw, 0, IGNRCONT);
+
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		int bitmap = sptr[LANE_SPACE_BITMAP];
+		bitmap = bitmap ^ (1 << local_space_bit);
+		sptr[LANE_SPACE_BITMAP] = bitmap;
+	}
+	
+
+}
+
+
+thread DistributedSortPhase2MapperLb {
+	long tot, bin_size;
+	unsigned long* bin_dram_addr;
+	unsigned long save_cont;
+
+	unsigned long offset;
+	unsigned long local_space_bit;
+    // event kv_map(unsigned long key, unsigned long val) {
+		// // print("<kv_map2> getting key = %lu, value = %lu", key, val);
+    //     unsigned long evw = evw_new(NETID, DistributedSortPhase2MapperLb::kv_map_cont, 2);
+		// // unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		// // unsigned long ikey = key / ptr[BKSIZE];
+		// // print("ikey = %d", ikey);
+		// // send_event(evw, val, key, val, CCONT);
+		// send_event(evw, val / 8, key, val, CCONT);
+    //     // evw = evw_update_event(CEVNT, DistributedSortPhase2MapperLb::kv_map_return, 2);
+    //     // send_event(evw, NETID, NETID, CCONT);
+		// yield;
+    // }
+
+    event kv_map(unsigned long key, unsigned long val) {
+		print("<adsdsaicoxshui> getting key = %lu, value = %lu", key, val);
+        unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2MapperLb::kv_map_cont, 3);
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		// unsigned long ikey = key / ptr[BKSIZE];
+		// print("ikey = %d", ikey);
+		// send_event(evw, val, key, val, CCONT);
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_lane_id = (val - sptr[BIN_SIZE_START]) / 8 / sptr[BINS_PER_LANE]; 
+		// print("bin_lane_id = %lu", bin_lane_id);
+		// send_event(evw, val / 8, key, val, CCONT);
+		send_event(evw, bin_lane_id, key, val, CCONT);
+		unsigned long ikey = bin_lane_id;
+		unsigned long bin_list_size = key;
+		unsigned long bin_addr = val;
+		
+        // evw = evw_update_event(CEVNT, DistributedSortPhase2Mapper::kv_map_return, 2);
+        // send_event(evw, NETID, NETID, CCONT);
+		yield;
+    }
+	
+    event kv_map_cont(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+		// print("receiving %lu %lu %lu", ikey, bin_list_size, bin_addr);
+		unsigned long evw;
+		// TODO: need to manage scratchpad
+		// print("bin_list_size = %lu", bin_list_size * 8);
+		// unsigned long cur_size = bin_list_size * 8;
+
+		if (bin_list_size == 0) {
+			evw = evw_update_event(CEVNT, DistributedSortPhase2MapperLb::kv_map_return);
+			send_event(evw, 0, CCONT);
+			yield;
+		}
+
+		// print("%lu trying to sort bin with size %lu", NETID, bin_list_size);
+
+		// allocate space in scratchpad
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		int bitmap = sptr[LANE_SPACE_BITMAP];
+		local_space_bit = 0;
+		while(bitmap >> local_space_bit & 1) {
+			local_space_bit = local_space_bit + 1;
+		}
+		bitmap = bitmap | (1 << local_space_bit);
+		sptr[LANE_SPACE_BITMAP] = bitmap;
+
+		if (bin_list_size <= SP_BLOCKSIZE) {
+			// print("getting bit = %d for local sort at NWID %lu", local_space_bit, NETID);
+
+			evw = evw_update_event(CEVNT, DistributedSortPhase2MapperLb::local_bin_sort, 3);
+		} else {
+			// print("getting bit = %d for ext merge sort at NWID %lu", local_space_bit, NETID);
+
+			// print("bin_list_size = %lu", bin_list_size);
+			evw = evw_update_event(CEVNT, DistributedSortPhase2MapperLb::ext_merge_sort, 3);
+		}
+
+
+		unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+		send_buffer[0] = ikey;
+		send_buffer[1] = bin_list_size;
+		send_buffer[2] = bin_addr;
+		send_buffer[3] = LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		send_event(evw, send_buffer, 4, CCONT);
+
+		save_cont = CCONT;
+		
+		// send_event(evw, ikey, bin_list_size, bin_addr, CCONT);
+		yield;
+		// unsigned long* local ptr = LMBASE + (SORT_OFFSET);
+		// unsigned long bin_size = ptr[BIN_SIZE];
+		// unsigned long bins_per_lane = ptr[BINS_PER_LANE];
+		// unsigned long local_bin_idx = value / bin_size % bins_per_lane;
+		// unsigned long dram_block_size = ptr[DRAM_BLOCK_SIZE];
+		// print("receiving value = %d, local_bin_idx = %d", value, local_bin_idx);
+		
+		// unsigned long * local counter_addr = LMBASE + (SORT_OFFSET + COUNTERS_OFFSET) + 8 * local_bin_idx;
+		// unsigned long local_bin_count = *counter_addr;
+		// unsigned long * local dram_addr = ptr[TMP_ADDR] + value / bin_size * dram_block_size + local_bin_count * 8;
+		// send_dram_write(dram_addr, value, DistributedSortPhase2MapperLb::kv_reduce_return);
+		// *counter_addr = local_bin_count + 1;
+		// print("%lu", counter_addr);
+		// print("local_bin_idx = %d, local_bin_count = %d, dram_addr = %lu", local_bin_idx, local_bin_count, dram_addr);
+		// yield;
+		// print("d", local_bin_idx);
+
+		// print("receiving %d %d, local_bin_idx = %d", key, value, local_bin_idx);
+
+        // unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2MapperLb::kv_reduce_return, 2);
+        // // unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase1::kv_combine, 2);
+        // send_event(evw, 0, IGNRCONT);
+    }
+
+    event kv_reduce(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+		yield;
+	}
+
+	// event ext_merge_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+	event ext_merge_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr, unsigned long *ptr) {
+		print("in ext_merge_sort, bin_size = %lu", bin_list_size);
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET + VAR_SIZE;
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_id = (bin_addr - sptr[BIN_SIZE_START]) / 8;
+		unsigned long* local tmp_bin_dram_addr =  sptr[TMP_ADDR] + bin_id * sptr[DRAM_BLOCK_SIZE];
+		bin_dram_addr = tmp_bin_dram_addr; 
+		bin_size = bin_list_size;
+		unsigned long evw = evw_new(NETID, ExternalMergeSort::sort);
+		unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+		send_buffer[0] = bin_dram_addr;
+		send_buffer[1] = bin_size;
+		send_buffer[2] = ptr;
+		// unsigned long bk_size = SP_BLOCKSIZE;
+		send_buffer[3] = SP_BLOCKSIZE;
+
+		send_event(evw, send_buffer, 4, kv_reduce_ext_sort_ret);
+		// yield;
+	}
+
+	event local_bin_sort(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr, unsigned long *ptr) {
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET + VAR_SIZE;
+		print("in local_bin_sort, bin_size = %lu", bin_list_size);
+
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long bin_id = (bin_addr - sptr[BIN_SIZE_START]) / 8;
+		unsigned long* local tmp_bin_dram_addr =  sptr[TMP_ADDR] + bin_id * sptr[DRAM_BLOCK_SIZE];
+		// print("starting sorting bin %d", NETID);
+
+		bin_dram_addr = tmp_bin_dram_addr; 
+		// print("bin_id = %lu", bin_id);
+		offset = ptr - bin_dram_addr;
+		// print("sorting bin from dram: %lu, bin_size = %lu", bin_dram_addr, bin_list_size);
+		// if(NETID == 60) {
+		// 		sptr =  LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		// 		for (int i = 0; i < bin_list_size; i = i + 1) {
+		// 			print("begin sort60, having %lu", sptr[i]);
+		// 		}
+		// }
+		// for (tot = 0; tot < bin_list_size; tot = tot + 1) {
+		// 	send_dram_read(bin_dram_addr, 1, DistributedSortPhase2MapperLb::kv_reduce_load_ret);
+		// 	bin_dram_addr = bin_dram_addr + 8;
+		// }
+		// asm {"perflog 1 0 '[NWID %lu] start sorting bin' X0" };
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_sp);
+		send_event(evw, bin_dram_addr, ptr, bin_list_size, kv_reduce_load_ret);
+
+		bin_dram_addr = tmp_bin_dram_addr; 
+		bin_size = bin_list_size;
+	}
+
+	event kv_reduce_load_ret() {
+		// print("loading %d %lu", key, addr);
+		// unsigned long* local lm_ptr = addr + offset;
+		// *lm_ptr = key;
+		// tot = tot - 1;
+		if(1) {
+			// asm {"perflog 1 0 '[NWID %lu] loadfinish sorting bin' X0" };
+			// start a new thread for sort?
+
+			unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2LocalSort::init);
+			unsigned long cont = evw_update_event(CEVNT, kv_reduce_sort_ret);
+			send_event(evw, bin_size, LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8, cont);
+		} else {
+			if(tot < 0) {
+				print("tot < 0");
+			}
+		}
+	}
+
+	event kv_reduce_sort_ret() {
+		// print("in kv_reduce_sort_ret");
+		unsigned long* local lm_ptr = LMBASE + (SORT_OFFSET + VAR_SIZE) + local_space_bit * SP_BLOCKSIZE * 8;
+		bin_dram_addr = lm_ptr - offset;
+
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_sp_to_dram);
+		send_event(evw, lm_ptr, bin_dram_addr, bin_size, kv_reduce_sort_send_back_ret);
+		// asm {"perflog 1 0 '[NWID %lu] sortfinish sorting bin' X0" };
+
+		// for (tot = 0; tot < bin_size; tot = tot + 1) {
+		// 	send_dram_write(bin_dram_addr, lm_ptr, 1, kv_reduce_sort_send_back_ret);
+		// 	bin_dram_addr = bin_dram_addr + 8;
+		// 	lm_ptr = lm_ptr + 8;
+		// }
+	
+	}
+
+	event kv_reduce_sort_send_back_ret() {
+		// tot = tot - 1;
+		if(1) {
+			// print("sended back sorted bin to dram: %lu, bin_size = %lu", bin_dram_addr, bin_size);
+			// asm {"perflog 1 0 '[NWID %lu] storefinish sorting bin' X0" };
+
+			unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2MapperLb::kv_map_return);
+			send_event(evw, 0, save_cont);
+			// send_event(evw, 0, IGNRCONT);
+
+
+			// clear the current bit
+			unsigned long* local sptr = LMBASE + SORT_OFFSET;
+			int bitmap = sptr[LANE_SPACE_BITMAP];
+			bitmap = bitmap ^ (1 << local_space_bit);
+			sptr[LANE_SPACE_BITMAP] = bitmap;
+
+		} else {
+			if(tot < 0) {
+				print("tot < 0");
+			}
+		}
+
+	}
+
+	event kv_reduce_ext_sort_ret() {
+		// asm {"perflog 1 0 '[NWID %lu] end sorting bin' X0" };
+
+		unsigned long evw = evw_update_event(CEVNT, DistributedSortPhase2MapperLb::kv_map_return);
+		send_event(evw, 0, save_cont);
+		// send_event(evw, 0, IGNRCONT);
+
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		int bitmap = sptr[LANE_SPACE_BITMAP];
+		bitmap = bitmap ^ (1 << local_space_bit);
+		sptr[LANE_SPACE_BITMAP] = bitmap;
+	}
+	
+
+}
+
+
+
+thread DistributedSortPhase3 {
+	long tot, bin_size;
+	unsigned long* bin_dram_addr;
+	unsigned long offset;
+    event kv_map(unsigned long key, unsigned long val) {
+		// print("<kv_map3> getting key = %lu, value = %lu", key, val);
+        unsigned long evw = evw_new(NETID, DistributedSortPhase3::kv_map_emit, 2);
+		// unsigned long* local ptr = LMBASE + SORT_OFFSET;
+		// unsigned long ikey = key / ptr[BKSIZE];
+		// print("ikey = %d", ikey);
+		send_event(evw, val, key, val, CCONT);
+        evw = evw_update_event(CEVNT, DistributedSortPhase3::kv_map_return, 2);
+        send_event(evw, NETID, NETID, CCONT);
+		yield;
+    }
+
+	event kv_reduce(unsigned long ikey, unsigned long bin_list_size, unsigned long bin_addr) {
+		// print("<kv_reduce3> receiving %lu %lu %lu", ikey, bin_list_size, bin_addr);
+		bin_size = bin_list_size;
+		unsigned long* local ptr = LMBASE + SORT_OFFSET + VAR_SIZE;
+		unsigned long* local sptr = LMBASE + SORT_OFFSET;
+		unsigned long* local bin_ddr = bin_addr;
+		unsigned long bin_id = (bin_addr - sptr[BIN_SIZE_START]) / 8;
+		unsigned long* local tmp_bin_dram_addr =  sptr[TMP_ADDR] + bin_id * sptr[DRAM_BLOCK_SIZE];
+		bin_dram_addr = tmp_bin_dram_addr; 
+		// print("bin_id = %lu", bin_id);
+		// bin_dram_addr = tmp_bin_dram_addr; 
+		offset = (sptr[LIST_ADDR] + bin_size * 8 - bin_dram_addr);
+
+		send_dram_read((bin_ddr + 8), 1, DistributedSortPhase3::load_next_bin_size);
+
+	}
+
+	event load_next_bin_size(long nxt_bin_size) {
+		bin_size = nxt_bin_size - bin_size;
+		// print("next bin size = %d", bin_size);
+		// print("bin_size = %d", bin_size);
+		if (bin_size == 0) {
+			send_event(CCONT, 0, IGNRCONT);
+			yield;
+		}
+		unsigned long evw = evw_new(NETID, MemcpyLib::memcpy_dram_to_dram);
+		send_event(evw, bin_dram_addr, bin_dram_addr + offset, bin_size, CCONT);
+
+		// for (tot = 0; tot < bin_size; tot = tot + 1) {
+		// 	send_dram_read(bin_dram_addr, 1, DistributedSortPhase3::kv_reduce_load_ret);
+		// 	bin_dram_addr = bin_dram_addr + 8;
+		// }
+	}
+}
+
+thread Test {
+	event test(unsigned long x) {
+		if (x * 8 <= 64) {
+			print("test: x = %d", x);	
+		} 
+	}
+}
+
+thread SortingTest {
+	// unsigned long cnt;
+
+	event test(long sort_lm_offset, long list_size, long *list_addr, long num_lanes, long *tmp_addr, long num_bins, long *lb_addr, int max_value) {
+		unsigned long evw = evw_new(NETID, Distributed_sort::sort_new);
+		unsigned long cont = evw_update_event(CEVNT, theEnd);
+		unsigned long* local spPtr = LMBASE + SEND_BUFFER_OFFSET;
+        spPtr[0] = sort_lm_offset;
+        spPtr[1] = list_size;
+        spPtr[2] = list_addr;
+        spPtr[3] = num_lanes;
+        spPtr[4] = tmp_addr;
+        spPtr[5] = num_bins;
+        spPtr[6] = lb_addr;
+        spPtr[7] = max_value;
+		// print("tmp")
+		send_event(evw, spPtr, 8, cont);
+	}
+
+	event test_parallel_prefix(long* list_addr, long list_size, long num_lanes) {
+		unsigned long evw = evw_new(NETID, ParallelPrefix::prefix);
+		unsigned long cont = evw_update_event(CEVNT, theEnd);
+		unsigned long* local spPtr = LMBASE + SEND_BUFFER_OFFSET;
+        spPtr[0] = list_addr;
+        spPtr[1] = list_size;
+		spPtr[2] = num_lanes;
+        spPtr[3] = 1600;
+        spPtr[4] = 1600 + PBLOCKSIZE * 8;
+		// print("in test_parallel_prefix");
+		send_event(evw, spPtr, 5, cont);
+	}
+
+
+
+	event theEnd() {
+		// print("returning to theEnd");
+		unsigned long* local spPtr = LMBASE;
+		*spPtr = 1;
+		yield_terminate;
+	}
+}

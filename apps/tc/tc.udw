@@ -1,0 +1,765 @@
+// #include "LMStaticMap.udwh"
+#define TEST_TOP_OFFSET 64
+#define TEST_TOP_FLAG 273
+#define SEND_BUFFER_OFFSET 704
+#define GRAPH_ADDR_OFFSET 29848
+#define TC_COUNT_OFFSET 29856
+#define SPMALLOC_OFFSET 29864
+#define HEAP_OFFSET 29872
+
+// #define SEND_ALL_MAP_READ
+// #define PRINT_EDGE_RESULT
+
+extern event tc_broadcast__broadcast_global();
+extern event lm_allocator__spmalloc();
+extern event lm_allocator__spfree();
+extern event tc__map_shuffle_reduce();
+extern event tc__kv_map_emit();
+extern event tc__kv_map_return();
+extern event tc__kv_reduce_return();
+extern event tc_accumulate__init_global_snyc();
+
+asm native {"
+    EXTENSION = 'load_balancer'
+    test_ws = False
+    test_random = False
+    DEBUG_FLAG = False
+    LB_TYPE = ['mapper','reducer']
+    rtype = 'lane' if test_ws else 'ud'
+    multi = not test_ws
+    map_ws = test_ws
+    red_ws = test_ws
+
+    from libraries.UDMapShuffleReduce.linkable.LinkableKVMapShuffleCombineTPL import UDKeyValueMapShuffleReduceTemplate
+    from libraries.UDMapShuffleReduce.utils.OneDimArrayKeyValueSet import OneDimKeyValueSet
+    from libraries.UDMapShuffleReduce.utils.IntermediateKeyValueSet import IntermediateKeyValueSet
+    from LinkableGlobalSync import Broadcast, GlobalSync
+    from SpMalloc import SpMallocEFA
+    from libraries.LMStaticMaps.LMStaticMap import UDKVMSR_0_OFFSET
+
+    spmalloc = SpMallocEFA(efa, state0 = state0, init_offset = SPMALLOC_OFFSET)
+    broadcast = Broadcast(state = state0, identifier='tc_broadcast')
+
+    task_name = 'tc'
+    tcMSR = UDKeyValueMapShuffleReduceTemplate(efa=efa, task_name=task_name, meta_data_offset=UDKVMSR_0_OFFSET, debug_flag=DEBUG_FLAG, 
+                                                extension = EXTENSION, load_balancer_type = LB_TYPE, grlb_type = rtype, 
+                                                claim_multiple_work = multi, test_map_ws=map_ws, test_reduce_ws=red_ws, random_lb=test_random, do_all_reduce = True)
+    tcMSR.set_input_kvset(OneDimKeyValueSet('tc_input', element_size=8) )
+    tcMSR.set_intermediate_kvset(IntermediateKeyValueSet('tc_intermediate', key_size=1, value_size=2))
+    tcMSR.set_max_thread_per_lane(max_map_th_per_lane=64, max_reduce_th_per_lane=128, max_reduce_key_to_claim = 128)
+    tcMSR.setup_lb_cache(intermediate_cache_num_bins = 16, intermediate_cache_size = 1024, materialize_kv_cache_size = 512, materialize_kv_dram_size = 1<<16)
+    print(tcMSR.heap_offset)
+
+    tcMSR.generate_udkvmsr_task()
+
+    tc_accumulate_global_sync = GlobalSync(tcMSR.state, 'tc_accumulate', 'X28', [TC_COUNT_OFFSET], ['X29','X30'], debug_flag = DEBUG_FLAG)
+    tc_accumulate_global_sync.global_sync(continuation='X1', sync_value='X9', num_lanes='X8')
+"};
+thread tc {
+    unsigned long v1;
+    unsigned long v1_deg;
+    unsigned long* v1_nb_list;
+    // unsigned long iter_a;
+    // unsigned long offs_a;
+    unsigned long v2_deg;
+    unsigned long* v2_nb_list;
+    // unsigned long iter_b;
+    // unsigned long offs_b;
+
+    unsigned long threashold;
+    unsigned long read_count;
+    unsigned long* local cached_nb;
+    
+    
+#ifdef SEND_ALL_MAP_READ
+    event kv_map (unsigned long id, unsigned long degree, unsigned long nb_list) {
+        if (1) {
+            print('start map')
+            unsigned long ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+            send_event(ev_word, id, degree, IGNRCONT);
+            yield;
+        }
+
+        if(degree > 0) { 
+            v1 = id;
+            v1_deg = degree;
+            v1_nb_list = nb_list;
+            unsigned long* nb_list_cur = nb_list;
+            unsigned long unread_nb_count = degree;
+            read_count = degree;
+
+            while (unread_nb_count > 0) {
+                if (unread_nb_count >= 8) {
+                    send_dram_read(nb_list_cur, 8, map_read_ret);
+                    unread_nb_count = unread_nb_count - 8;
+                    nb_list_cur = nb_list_cur + 8 * 8;
+                }
+                else {
+                    if (unread_nb_count == 1) {
+                        send_dram_read(nb_list_cur, 1, map_read_ret);
+                    }
+                    elif (unread_nb_count == 2) {
+                        send_dram_read(nb_list_cur, 2, map_read_ret);
+                    }
+                    elif (unread_nb_count == 3) {
+                        send_dram_read(nb_list_cur, 3, map_read_ret);
+                    }
+                    elif (unread_nb_count == 4) {
+                        send_dram_read(nb_list_cur, 4, map_read_ret);
+                    }
+                    elif (unread_nb_count == 5) {
+                        send_dram_read(nb_list_cur, 5, map_read_ret);
+                    }
+                    elif (unread_nb_count == 6) {
+                        send_dram_read(nb_list_cur, 6, map_read_ret);
+                    }
+                    else {
+                        send_dram_read(nb_list_cur, 7, map_read_ret);
+                    }
+                    unread_nb_count = 0;
+                }
+            }
+
+            yield;
+
+        }
+        
+        unsigned long ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+        send_event(ev_word, id, 3, IGNRCONT);
+        yield;
+    }
+
+    event map_read_ret (long op0, long op1, long op2,long op3,long op4,long op5,long op6, long op7){
+        unsigned long num_ops = ((CEVNT >> 20) & 0b111) + 1;
+        unsigned long ev_word = evw_new(NETID, tc__kv_map_emit);
+
+        if (num_ops > 0) {
+            if (v1>op0) {
+                unsigned long key = (op0 << 32) | v1;
+                send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+            }
+        }
+        if (num_ops > 1) {
+            if (v1>op1) {
+                unsigned long key = (op1 << 32) | v1;
+                send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+            }
+        }
+        if (num_ops > 2) {
+            if (v1>op2) {
+                unsigned long key = (op2 << 32) | v1;
+                send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+            }
+        }
+        if (num_ops > 3) {
+            if (v1>op3) {
+                unsigned long key = (op3 << 32) | v1;
+                send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+            }
+        }
+        if (num_ops > 4) {
+            if (v1>op4) {
+                unsigned long key = (op4 << 32) | v1;
+                send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+            }
+        }
+        if (num_ops > 5) {
+            if (v1>op5) {
+                unsigned long key = (op5 << 32) | v1;
+                send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+            }
+        }
+        if (num_ops > 6) {
+            if (v1>op6) {
+                unsigned long key = (op6 << 32) | v1;
+                send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+            }
+        }
+        if (num_ops > 7) {
+            if (v1>op7) {
+                unsigned long key = (op7 << 32) | v1;
+                send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+            }
+        }
+
+        read_count = read_count - num_ops;
+        if (read_count == 0) {
+            ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+            send_event(ev_word, v1, v1_deg, IGNRCONT);
+        }
+
+        yield;
+
+    }
+#else
+    event kv_map (unsigned long id, unsigned long degree, unsigned long nb_list) {
+        // print("start map, v1 %lu degree %lu nb_list %lu", id, degree, nb_list);
+        // if (1) {
+        //     print("start map");
+        //     unsigned long ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+        //     send_event(ev_word, id, degree, IGNRCONT);
+        //     yield;
+        // }
+        if(degree > 0) { 
+            v1 = id;
+            v1_deg = degree;
+            v1_nb_list = nb_list;
+            unsigned long* nb_list_cur = nb_list;
+            read_count = 0;
+            
+            unsigned long ev_word = evw_update_event(CEVNT, map_read);
+            send_event(ev_word, id, 3, IGNRCONT);
+            
+        }
+        else {
+            unsigned long ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+            send_event(ev_word, id, 3, IGNRCONT);
+        }
+
+        yield;
+    }
+
+    event map_read() {
+        unsigned long* nb_list_cur = v1_nb_list + read_count * 8;
+        unsigned long* cur_read_count = v1_deg - read_count;
+        if (cur_read_count >= 8) {
+            cur_read_count = 8;
+        }
+        read_count = read_count + cur_read_count;
+
+        if (cur_read_count == 8) {
+            send_dram_read(nb_list_cur, 8, map_read_ret);
+        }
+        elif (cur_read_count == 1) {
+            send_dram_read(nb_list_cur, 1, map_read_ret);
+        }
+        elif (cur_read_count == 2) {
+            send_dram_read(nb_list_cur, 2, map_read_ret);
+        }
+        elif (cur_read_count == 3) {
+            send_dram_read(nb_list_cur, 3, map_read_ret);
+        }
+        elif (cur_read_count == 4) {
+            send_dram_read(nb_list_cur, 4, map_read_ret);
+        }
+        elif (cur_read_count == 5) {
+            send_dram_read(nb_list_cur, 5, map_read_ret);
+        }
+        elif (cur_read_count == 6) {
+            send_dram_read(nb_list_cur, 6, map_read_ret);
+        }
+        else {
+            send_dram_read(nb_list_cur, 7, map_read_ret);
+        }
+
+        // print("map read count %lu", read_count);
+
+        yield;
+    }
+
+    event map_read_ret (long op0, long op1, long op2,long op3,long op4,long op5,long op6, long op7){
+        unsigned long num_ops = ((CEVNT >> 20) & 0b111) + 1;
+        unsigned long ev_word = evw_new(NETID, tc__kv_map_emit);
+
+        // print("map read return");
+        if (num_ops > 0) {
+            if (v1 <= op0) {
+                ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+                send_event(ev_word, v1, IGNRCONT);
+                // print("map return");
+                yield;
+            }
+            unsigned long key = (op0 << 32) | v1;
+            send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+        }
+        if (num_ops > 1) {
+            if (v1 <= op1) {
+                ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+                send_event(ev_word, v1, IGNRCONT);
+                // print("map return");
+                yield;
+            }
+            unsigned long key = (op1 << 32) | v1;
+            send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+        }
+        if (num_ops > 2) {
+            if (v1 <= op2) {
+                ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+                send_event(ev_word, v1, IGNRCONT);
+                // print("map return");
+                yield;
+            }
+            unsigned long key = (op2 << 32) | v1;
+            send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+        }
+        if (num_ops > 3) {
+            if (v1 <= op3) {
+                ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+                send_event(ev_word, v1, IGNRCONT);
+                // print("map return");
+                yield;
+            }
+            unsigned long key = (op3 << 32) | v1;
+            send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+        }
+        if (num_ops > 4) {
+            if (v1 <= op4) {
+                ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+                send_event(ev_word, v1, IGNRCONT);
+                // print("map return");
+                yield;
+            }
+            unsigned long key = (op4 << 32) | v1;
+            send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+        }
+        if (num_ops > 5) {
+            if (v1 <= op5) {
+                ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+                send_event(ev_word, v1, IGNRCONT);
+                // print("map return");
+                yield;
+            }
+            unsigned long key = (op5 << 32) | v1;
+            send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+        }
+        if (num_ops > 6) {
+            if (v1 <= op6) {
+                ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+                send_event(ev_word, v1, IGNRCONT);
+                // print("map return");
+                yield;
+            }
+            unsigned long key = (op6 << 32) | v1;
+            send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+        }
+        if (num_ops > 7) {
+            if (v1 <= op7) {
+                ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+                send_event(ev_word, v1, IGNRCONT);
+                // print("map return");
+                yield;
+            }
+            unsigned long key = (op7 << 32) | v1;
+            send_event(ev_word, key, v1_deg, v1_nb_list, IGNRCONT);
+        }
+
+        
+        if (read_count == v1_deg) {
+            ev_word = evw_update_event(CEVNT, tc__kv_map_return);
+            send_event(ev_word, v1, v1_deg, IGNRCONT);
+            // print("map return");
+        }
+        else {
+            ev_word = evw_update_event(CEVNT, map_read);
+            send_event(ev_word, v1, v1_deg, IGNRCONT);
+        }
+
+        yield;
+
+    }
+#endif
+
+
+    unsigned long saved_cont;
+
+    event kv_reduce (unsigned long v2_v1, unsigned long degree, unsigned long nb_list) {
+        // unsigned long* local ptr = LMBASE + TC_COUNT_OFFSET;
+        // unsigned long tc_count = ptr[0];
+        // print("Current triangle count: %lu", tc_count);
+        // print("Reduce start.");
+
+        saved_cont = CCONT;
+        v1 = (v2_v1 << 32) >> 32;
+        v1_deg = degree;
+        v1_nb_list = nb_list;
+        // print("Received v1_nb_list: %lu", v1_nb_list);
+        // if (v1 ==0) {
+        //     print("v1: %lu, v1_deg: %lu, v1_nb_list: %lu", v1, v1_deg, v1_nb_list);
+        // }
+
+        unsigned long* local ptr = LMBASE + GRAPH_ADDR_OFFSET;
+        unsigned long* graph = ptr[0];
+
+        unsigned long v2 = v2_v1 >> 32;
+        graph = graph + (v2 << 6);
+        send_dram_read(graph, 3, v2_read_ret);
+        yield;
+    }
+
+    event v2_read_ret(unsigned long v2, unsigned long degree, unsigned long* nb_list) {
+
+        if (degree == 0) {
+            unsigned long ev_word = evw_update_event(CEVNT, tc__kv_reduce_return);
+            send_event(ev_word, threashold, CCONT);
+            yield;
+        }
+
+        unsigned long ev_word = evw_new(NETID, lm_allocator__spmalloc);
+        send_event(ev_word, 24, sp_malloc_ret);
+
+        threashold = v2;
+        v2_deg = degree;
+        v2_nb_list = nb_list;
+        // print("v2: %lu, v2_deg: %lu, v1_nb_list: %lu, v2_nb_list: %lu", v2, degree, v1_nb_list, nb_list);
+
+        yield;
+    }
+
+    event sp_malloc_ret(long unsigned addr, long status) {
+        cached_nb = addr;
+        cached_nb[0] = v1_deg;
+        cached_nb[1] = v1_nb_list;
+        cached_nb[2] = 0;
+        cached_nb[3] = 0;
+        cached_nb[4] = v2_deg;
+        cached_nb[5] = v2_nb_list;
+        cached_nb[6] = 0;
+        cached_nb[7] = 0;
+
+        send_dram_read(v1_nb_list, 8, v1_nblist_read_ret);
+        send_dram_read(v2_nb_list, 8, v2_nblist_read_ret);
+        read_count = 2;
+        yield;
+    }
+
+    event v1_nblist_read_ret(long op0, long op1, long op2,long op3,long op4,long op5,long op6, long op7) {
+        read_count = read_count - 1;
+
+        if (cached_nb == 0) {
+            send_ops(CEVNT, op0, 8, CCONT);
+            yield;
+        }
+
+        unsigned long* local ptr = cached_nb + 8*8;
+        copyOperands(op0, ptr, 8);
+
+        if (read_count == 0) {
+            unsigned long ev_word = evw_update_event(CEVNT, tc_compute::setup_thread_reg);
+            send_event(ev_word, v1, threashold, cached_nb, saved_cont);
+        }
+
+        yield;
+    }
+
+    event v2_nblist_read_ret(long op0, long op1, long op2,long op3,long op4,long op5,long op6, long op7) {
+        read_count = read_count - 1;
+
+        if (cached_nb == 0) {
+            send_ops(CEVNT, op0, 8, CCONT);
+            yield;
+        }
+
+        unsigned long* local ptr = cached_nb + 16*8;
+        copyOperands(op0, ptr, 8);
+
+        if (read_count == 0) {
+            unsigned long ev_word = evw_update_event(CEVNT, tc_compute::setup_thread_reg);
+            send_event(ev_word, v1, threashold, cached_nb, saved_cont);
+        }
+
+        yield;
+    }
+
+}
+
+
+thread tc_compute {
+    unsigned long v1_id;
+    unsigned long loc_tc;
+    unsigned long threashold;
+    unsigned long read_count;
+    unsigned long* local cached_nb;
+    // cache_nb = || v1_deg || v1_nb_list || iter_a || offs_a || v2_deg || v2_nb_list || iter_b || offs_b ||
+    // index      || 0      || 1          || 2      || 3      || 4      || 5          || 6      || 7      ||
+    event setup_thread_reg (unsigned long v1, unsigned long v2, unsigned long spmalloc_ptr) {
+        v1_id = v1;
+        loc_tc = 0;
+        read_count = 0;
+        threashold = v2;
+        cached_nb = spmalloc_ptr;
+
+        // if (v1_id == 15661 && threashold == 15662) {
+        //     unsigned long v1_deg = cached_nb[0];
+        //     unsigned long v1_nb_list = cached_nb[1];
+        //     unsigned long v2_deg = cached_nb[4];
+        //     unsigned long v2_nb_list = cached_nb[5];
+        //     print("Edge %lu-%lu: v1_deg: %lu, v1_nb_list: 0x%lx, v2_deg: %lu, v2_nb_list: 0x%lx", v1_id, threashold, v1_deg, v1_nb_list, v2_deg, v2_nb_list);
+        // }
+        
+        unsigned long ev_word = evw_update_event(CEVNT, intersect_ab);
+        send_ops(ev_word, v2, 2, CCONT);
+        yield;
+    }
+
+    event intersect_ab() {
+
+        // if (v1_id == 1394 && threashold == 1380) {
+        //     print("V1 neighbors:");
+        //     for (int i=0; i<8; i=i+1){
+        //         unsigned long tmp = cached_nb[i+8];
+        //         print("neighbor_%d: %lu", i, tmp);
+        //     }
+        //     print("V2 neighbors:");
+        //     for (int i=0; i<8; i=i+1){
+        //         unsigned long tmp = cached_nb[i+16];
+        //         print("neighbor_%d: %lu", i, tmp);
+        //     }
+        // }
+        // print("Start intersect");
+        unsigned long offs_a = cached_nb[3], offs_b = cached_nb[7];
+        unsigned long loc_size_a, loc_size_b;
+        if (1) {
+            unsigned long rem = cached_nb[0] - cached_nb[2];
+            if(rem > 8) { loc_size_a = 8; }
+            else{ loc_size_a = rem; }
+
+            rem = cached_nb[4] - cached_nb[6];
+            if(rem > 8) { loc_size_b = 8; }
+            else{ loc_size_b = rem; }
+        }
+
+        if (1) {
+            unsigned long reached_end = 0;
+            unsigned long* local ptr = cached_nb + 8*8;
+            if (1) {
+
+                // else walk through the two lists simultaeously
+                while((offs_a < loc_size_a) && (offs_b < loc_size_b)){
+                    long elem_a = ptr[offs_a];
+                    long elem_b = ptr[offs_b + 8];
+
+                    if(elem_a >= threashold){
+                        reached_end = 1;
+                        offs_a = loc_size_a;
+                        read_count = elem_a;
+                    }
+                    elif(elem_b >= threashold){
+                        reached_end = 1;
+                        offs_b = loc_size_b;
+                        read_count = elem_b;
+                    }
+                    elif(elem_a < elem_b){
+                        offs_a = offs_a + 1;
+                    }
+                    elif(elem_b < elem_a){
+                        offs_b = offs_b + 1;
+                    }
+                    else{
+                        loc_tc = loc_tc + 1;
+                        offs_a = offs_a + 1;
+                        offs_b = offs_b + 1;
+                    }
+                } 
+            }
+
+            // if intersect result > v0, end
+            if(reached_end == 1) {
+                unsigned long ev_word = evw_new(NETID, lm_allocator__spfree);
+                unsigned long cont_word = evw_new(NETID, sp_free_ret);
+                send_event(ev_word, cached_nb, cont_word);
+                ev_word = evw_update_event(CEVNT, tc__kv_reduce_return);
+                send_event(ev_word, threashold, CCONT);
+
+                // update the loc tc
+                ptr = LMBASE + TC_COUNT_OFFSET;
+                ptr[0] = ptr[0] + loc_tc;
+                // if (v1_id < threashold) {
+                //     print("Reach end. element: %lu, threashold: %lu", read_count, threashold);
+                //     print("Edge %u-%u intersect finished, tc count: %lu", v1_id, threashold, loc_tc);
+                // }
+#ifdef PRINT_EDGE_RESULT
+                print("%u-%u: %lu.", v1_id, threashold, loc_tc);
+#endif
+
+                // if (loc_tc > 0){
+                //     double js = loc_tc/(v1_deg + v2_deg - loc_tc);
+                //     ptr = next(dram);
+                //     send (ptr, js);
+                //     dram += size(entry);
+                //     local_count += 1;
+                // }
+
+
+                yield;
+            }
+        }
+
+
+        // one or both the lists exited --> whichever did fetch that
+        // update iter by how much ever was processed 
+        // check for bounds and fetch
+        // retain offs of the other one 
+        unsigned long iter_a = cached_nb[2];
+        if(offs_a == loc_size_a){
+            iter_a = iter_a + loc_size_a;
+            if(iter_a >= cached_nb[0]){
+                if (1) {
+                    unsigned long ev_word = evw_new(NETID, lm_allocator__spfree);
+                    unsigned long cont_word = evw_new(NETID, sp_free_ret);
+                    send_event(ev_word, cached_nb, cont_word);
+                    ev_word = evw_update_event(CEVNT, tc__kv_reduce_return);
+                    send_event(ev_word, threashold, CCONT);
+                }
+
+                // update the loc tc
+                unsigned long* local ptr = LMBASE + TC_COUNT_OFFSET;
+                ptr[0] = ptr[0] + loc_tc;
+                // if (v1_id < threashold) {
+                //     unsigned long v1_deg = cached_nb[0];
+                //     print("V1 iteration ends. iter_a: %lu, v1_deg: %lu", iter_a, v1_deg);
+                //     print("Edge %u-%u intersect finished, tc count: %lu", v1_id, threashold, loc_tc);
+                // }
+#ifdef PRINT_EDGE_RESULT
+                print("%u-%u: %lu.", v1_id, threashold, loc_tc);
+#endif                
+                yield;
+            }
+        }
+        unsigned long iter_b = cached_nb[6];
+        if(offs_b == loc_size_b){
+            iter_b = iter_b + loc_size_b;
+            if(iter_b >= cached_nb[4]){
+                if (1) {
+                    unsigned long ev_word = evw_new(NETID, lm_allocator__spfree);
+                    unsigned long cont_word = evw_new(NETID, sp_free_ret);
+                    send_event(ev_word, cached_nb, cont_word);
+                    ev_word = evw_update_event(CEVNT, tc__kv_reduce_return);
+                    send_event(ev_word, threashold, CCONT);
+                }
+
+                // update the loc tc
+                unsigned long* local ptr = LMBASE + TC_COUNT_OFFSET;
+                ptr[0] = ptr[0] + loc_tc;
+                // if (v1_id < threashold) {
+                //     unsigned long v2_deg = cached_nb[4];
+                //     print("V2 iteration ends. iter_b: %lu, v2_deg: %lu", iter_b, v2_deg);
+                //     print("Edge %u-%u intersect finished, tc count: %lu", v1_id, threashold, loc_tc);
+                // }
+#ifdef PRINT_EDGE_RESULT
+                print("%u-%u: %lu.", v1_id, threashold, loc_tc);
+#endif                
+                yield;
+            }
+        }
+
+
+        if(offs_a == loc_size_a){
+            unsigned long* addr = cached_nb[1] + (iter_a << 3);
+            send_dram_read(addr, 8, v1_nblist_read_ret);
+            offs_a = 0;
+            read_count = read_count + 1;
+        }
+        if(offs_b == loc_size_b){
+            unsigned long* addr = cached_nb[5] + (iter_b << 3);
+            send_dram_read(addr, 8, v2_nblist_read_ret);
+            offs_b = 0;
+            read_count = read_count + 1;
+        }
+
+        cached_nb[2] = iter_a;
+        cached_nb[3] = offs_a;
+        cached_nb[6] = iter_b;
+        cached_nb[7] = offs_b;
+        yield;
+
+    }
+
+    event v1_nblist_read_ret(long op0, long op1, long op2,long op3,long op4,long op5,long op6, long op7) {
+        read_count = read_count - 1;
+        unsigned long* local ptr = cached_nb + 8*8;
+        copyOperands(op0, ptr, 8);
+
+        if (read_count == 0) {
+            unsigned long ev_word = evw_update_event(CEVNT, intersect_ab);
+            send_event(ev_word, threashold, cached_nb, CCONT);
+        }
+
+        yield;
+    }
+
+    event v2_nblist_read_ret(long op0, long op1, long op2,long op3,long op4,long op5,long op6, long op7) {
+        read_count = read_count - 1;
+        unsigned long* local ptr = cached_nb + 16*8;
+        copyOperands(op0, ptr, 8);
+
+        if (read_count == 0) {
+            unsigned long ev_word = evw_update_event(CEVNT, intersect_ab);
+            send_event(ev_word, threashold, cached_nb, CCONT);
+        }
+
+        yield;
+    }
+
+    event sp_free_ret() {
+        yield_terminate;
+    }
+
+}
+
+thread main {
+    unsigned long cached_num_lanes;
+    event init (unsigned long partitions, unsigned long partition_per_lane, unsigned long num_lanes, 
+        unsigned long input, unsigned long input_size, unsigned long intermediate_hashmap) {
+        
+        unsigned long* local send_buffer = LMBASE + SEND_BUFFER_OFFSET;
+        unsigned long* local heap = LMBASE + HEAP_OFFSET;
+
+        unsigned long ev_word = evw_new(NETID, tc_broadcast__broadcast_global);
+        unsigned long tmp_ev_word = evw_new(NETID, main_broadcast_init::setup_spd);
+        send_buffer[0] = num_lanes;
+        send_buffer[1] = tmp_ev_word;
+        send_buffer[2] = input;
+
+        send_event(ev_word, send_buffer, 8, CEVNT);
+
+        send_buffer[0] = partitions;
+        send_buffer[1] = partition_per_lane;
+        send_buffer[2] = num_lanes;
+        heap[0] = input;
+        heap[1] = input_size;
+        send_buffer[3] = heap;
+        heap = heap + 2 * 8;
+        heap[0] = intermediate_hashmap;
+        send_buffer[4] = heap;
+
+        ev_word = evw_new(NETID, tc__map_shuffle_reduce);
+        send_event(ev_word, send_buffer, 8, combine_tc);
+
+        cached_num_lanes = num_lanes;
+        unsigned long* local ptr = LMBASE + TC_COUNT_OFFSET;
+        unsigned long tc_count = ptr[0];
+        print("Initial triangle count: %lu", tc_count);
+        yield;
+    }
+
+    event combine_tc(unsigned long num_reduce) {
+        print("UDKVMSR finished, executed %lu reduce tasks.", num_reduce);
+        asm {"perflog 1 0 'UDKVMSR finished'" };
+        unsigned long tmp = 0;
+        unsigned long ev_word = evw_new(NETID, tc_accumulate__init_global_snyc);
+        send_event(ev_word, cached_num_lanes, tmp, term);
+        yield;
+    }
+
+    event term (unsigned long tc_count) {
+        print("Total triangle count: %lu", tc_count);
+        asm {"perflog 1 0 'TC finished'" };
+        unsigned long* local ptr = LMBASE + TEST_TOP_OFFSET;
+        ptr[0] = TEST_TOP_FLAG;
+        print("Set test flag TEST_TOP_FLAG at offset TEST_TOP_OFFSET.");
+        yield_terminate;
+    }
+}
+
+thread main_broadcast_init {
+    event setup_spd (unsigned long graph) {
+        unsigned long* local ptr = LMBASE + SPMALLOC_OFFSET;
+        ptr[0] = HEAP_OFFSET;
+        ptr = LMBASE + TC_COUNT_OFFSET;
+        ptr[0] = 0;
+        ptr = LMBASE + GRAPH_ADDR_OFFSET;
+        ptr[0] = graph;
+        yield_terminate;
+    }
+}
+

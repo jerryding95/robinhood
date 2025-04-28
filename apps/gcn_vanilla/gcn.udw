@@ -1,0 +1,130 @@
+asm native {"
+    EXTENSION = 'non_load_balancing'
+    test_ws = False
+    test_random = False
+    DEBUG_FLAG = False
+    LB_TYPE = ['mapper','reducer']
+    rtype = 'lane' if test_ws else 'ud'
+    multi = not test_ws
+    map_ws = test_ws
+    red_ws = test_ws
+
+    from libraries.UDMapShuffleReduce.linkable.LinkableKVMapShuffleCombineTPL import UDKeyValueMapShuffleReduceTemplate
+    from libraries.UDMapShuffleReduce.utils.OneDimArrayKeyValueSet import OneDimKeyValueSet
+    from libraries.UDMapShuffleReduce.utils.IntermediateKeyValueSet import IntermediateKeyValueSet
+    from libraries.LMStaticMaps.LMStaticMap import UDKVMSR_0_OFFSET
+
+    task_name = 'gnn_vanilla_kvmsr'
+    gnnMSR = UDKeyValueMapShuffleReduceTemplate(efa=efa, task_name=task_name, meta_data_offset=UDKVMSR_0_OFFSET, debug_flag=DEBUG_FLAG, 
+                                                extension = EXTENSION, load_balancer_type = LB_TYPE, grlb_type = rtype, 
+                                                claim_multiple_work = multi, test_map_ws=map_ws, test_reduce_ws=red_ws, random_lb=test_random)
+    gnnMSR.set_input_kvset(OneDimKeyValueSet('gnn_input', element_size=2) )
+    gnnMSR.set_intermediate_kvset(IntermediateKeyValueSet('gnn_intermediate', key_size=1, value_size=2))
+    gnnMSR.set_max_thread_per_lane(max_map_th_per_lane=64, max_reduce_th_per_lane=128, max_reduce_key_to_claim = 1)
+    gnnMSR.setup_lb_cache(intermediate_cache_num_bins = 64, intermediate_cache_size = 512, materialize_kv_cache_size = 512)
+    print(gnnMSR.heap_offset)
+
+    gnnMSR.generate_udkvmsr_task()
+"};
+
+#define ITER_TIMES 1024
+#define FLAG_OFFSET 65528
+#define SEND_BUFFER_OFFSET 8
+#define DATA_BUFFER_OFFSET 256
+
+extern event gnn_vanilla_kvmsr__kv_combine();
+extern event gnn_vanilla_kvmsr__kv_map_emit();
+extern event gnn_vanilla_kvmsr__kv_map_return();
+extern event gnn_vanilla_kvmsr__kv_reduce_return();
+extern event gnn_vanilla_kvmsr__map_shuffle_reduce();
+
+thread gnn_vanilla_master {
+    event gnn_start(long ARRAY, long LENGTH, long PARTITION_ARRAY, long PART_PER_LANE, long NUM_WORKER, long interSpace) {
+        perflog(1, "GNN started");
+        print("GNN started");
+        unsigned long * local TMP_LM_DESC = LMBASE + SEND_BUFFER_OFFSET;
+        unsigned long * local TMP_SP_DESC = LMBASE + DATA_BUFFER_OFFSET;
+
+        TMP_SP_DESC[0] = ARRAY;
+        TMP_SP_DESC[1] = LENGTH;
+        TMP_SP_DESC[2] = interSpace;
+
+        TMP_LM_DESC[0] = PARTITION_ARRAY;
+        TMP_LM_DESC[1] = PART_PER_LANE;
+        TMP_LM_DESC[2] = NUM_WORKER;
+        TMP_LM_DESC[3] = TMP_SP_DESC;
+        TMP_LM_DESC[4] = TMP_SP_DESC + 16;
+
+        long evword = evw_new(NETID, gnn_vanilla_kvmsr__map_shuffle_reduce);
+        long cont_word = evw_update_event(CEVNT, gnn_term);
+
+        send_event(evword, TMP_LM_DESC, 5, cont_word);
+    }
+
+    event gnn_term(){
+        unsigned long * local TMP_LM_DESC = LMBASE + FLAG_OFFSET;
+        perflog(1, "GNN finished");
+        print("GNN finished");
+        TMP_LM_DESC[0] = 1;
+        yield_terminate;
+    }
+}
+
+thread gnn_vanilla_kvmsr {
+    unsigned long COUNTER;
+
+    event kv_map(unsigned long V_SRC, unsigned long V_DST) {
+        // print("kv_map_start,%ld,%ld.", V_DST, V_SRC);
+        unsigned long * local TMP_LM_DESC = LMBASE + SEND_BUFFER_OFFSET;
+
+        TMP_LM_DESC[0] = V_DST;
+        TMP_LM_DESC[1] = V_SRC;
+        TMP_LM_DESC[2] = 0;
+
+        unsigned long TMP_EV_WORD = evw_new(NETID, gnn_vanilla_kvmsr__kv_map_emit);
+        send_event(TMP_EV_WORD, TMP_LM_DESC, 3, CCONT);
+
+        TMP_EV_WORD = evw_update_event(CEVNT, gnn_vanilla_kvmsr__kv_map_return);
+        send_event(TMP_EV_WORD, V_SRC, V_DST, CCONT);
+    }
+
+    event kv_reduce(unsigned long V_DST, unsigned long V_SRC, unsigned long E_ADDR) {
+        COUNTER = 2;
+
+        // fetch data
+        // print("kv_reduce_start,%ld,%ld.", V_DST, V_SRC);
+        unsigned long TMP_EV_WORD = evw_update_event(CEVNT, kv_reduce_compute);
+        send_event(TMP_EV_WORD, 0, CCONT);
+        send_event(TMP_EV_WORD, 0, CCONT);
+    }
+
+    event kv_reduce_compute() {
+        COUNTER = COUNTER - 1;
+        if (COUNTER > 0) {
+            yield;
+        }
+
+        unsigned long i = 0;
+        unsigned long iter_times = ITER_TIMES;
+        for (i = 0; i < iter_times; i = i + 1) {
+            i = 0 + i;
+        }
+
+        // write data
+        COUNTER = 2;
+        unsigned long TMP_EV_WORD = evw_update_event(CEVNT, kv_reduce_write_back);
+        send_event(TMP_EV_WORD, 0, CCONT);
+        send_event(TMP_EV_WORD, 0, CCONT);
+    }
+
+    event kv_reduce_write_back() {
+        COUNTER = COUNTER - 1;
+        if (COUNTER > 0) {
+            yield;
+        }
+
+        // print("reduce_finish");
+        unsigned long TMP_EV_WORD = evw_update_event(CEVNT, gnn_vanilla_kvmsr__kv_reduce_return);
+        send_event(TMP_EV_WORD, 0, CCONT);
+    }
+}

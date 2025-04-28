@@ -1,0 +1,110 @@
+#ifndef __sorting_exe_H__
+#define __sorting_exe_H__
+
+namespace sorting_exe {
+
+    typedef unsigned int EventSymbol;
+
+    constexpr EventSymbol Broadcast__broadcast_global = 0;
+    constexpr EventSymbol Broadcast__broadcast_node = 1;
+    constexpr EventSymbol Broadcast__broadcast_ud = 2;
+    constexpr EventSymbol Broadcast__broadcast_ud_fin = 3;
+    constexpr EventSymbol Broadcast__broadcast_node_fin = 4;
+    constexpr EventSymbol Broadcast__broadcast_global_fin = 5;
+    constexpr EventSymbol Broadcast__broadcast_value_to_scratchpad = 6;
+    constexpr EventSymbol test_sort__sort_udkvmsr__map_shuffle_reduce = 7;
+    constexpr EventSymbol test_sort__sort_udkvmsr__finish_init_udkvmsr = 8;
+    constexpr EventSymbol Dsort_input__generate_partition_array = 9;
+    constexpr EventSymbol Dsort_input__write_partition_array_return = 10;
+    constexpr EventSymbol test_sort__sort_udkvmsr__broadcast_global = 11;
+    constexpr EventSymbol test_sort__sort_udkvmsr__broadcast_node = 12;
+    constexpr EventSymbol test_sort__sort_udkvmsr__broadcast_ud = 13;
+    constexpr EventSymbol test_sort__sort_udkvmsr__broadcast_ud_fin = 14;
+    constexpr EventSymbol test_sort__sort_udkvmsr__broadcast_node_fin = 15;
+    constexpr EventSymbol test_sort__sort_udkvmsr__broadcast_global_fin = 16;
+    constexpr EventSymbol test_sort__sort_udkvmsr__broadcast_value_to_scratchpad = 17;
+    constexpr EventSymbol test_sort__sort_udkvmsr__init_input_kvset_on_lane = 18;
+    constexpr EventSymbol test_sort__sort_udkvmsr__init_sp_lane = 19;
+    constexpr EventSymbol test_sort__sort_udkvmsr__init_global_master = 20;
+    constexpr EventSymbol test_sort__sort_udkvmsr__global_master = 21;
+    constexpr EventSymbol test_sort__sort_udkvmsr__init_master_node = 22;
+    constexpr EventSymbol test_sort__sort_udkvmsr__node_master = 23;
+    constexpr EventSymbol test_sort__sort_udkvmsr__termiante_node_master = 24;
+    constexpr EventSymbol test_sort__sort_udkvmsr__init_updown_master = 25;
+    constexpr EventSymbol test_sort__sort_udkvmsr__updown_master = 26;
+    constexpr EventSymbol test_sort__sort_udkvmsr__terminate_updown_master = 27;
+    constexpr EventSymbol test_sort__sort_udkvmsr__lane_master_init = 28;
+    constexpr EventSymbol test_sort__sort_udkvmsr__lane_master_loop = 29;
+    constexpr EventSymbol test_sort__sort_udkvmsr__lane_master_read_partition = 30;
+    constexpr EventSymbol test_sort__sort_udkvmsr__lane_master_get_next_return = 31;
+    constexpr EventSymbol test_sort__sort_udkvmsr__lane_master_terminate = 32;
+    constexpr EventSymbol test_sort__sort_udkvmsr__init_global_snyc = 33;
+    constexpr EventSymbol test_sort__sort_udkvmsr__init_node_sync = 34;
+    constexpr EventSymbol test_sort__sort_udkvmsr__ud_accumulate = 35;
+    constexpr EventSymbol test_sort__sort_udkvmsr__global_sync_return = 36;
+    constexpr EventSymbol test_sort__sort_udkvmsr__node_sync_return = 37;
+    constexpr EventSymbol test_sort__sort_udkvmsr__kv_map_emit = 38;
+    constexpr EventSymbol test_sort__sort_udkvmsr__kv_reduce_emit = 39;
+    constexpr EventSymbol test_sort__sort_udkvmsr__kv_map_return = 40;
+    constexpr EventSymbol test_sort__sort_udkvmsr__init_reduce_thread = 41;
+    constexpr EventSymbol test_sort__sort_udkvmsr__kv_reduce_return = 42;
+    constexpr EventSymbol test_sort__sort_udkvmsr_broadcast__broadcast_global = 43;
+    constexpr EventSymbol test_sort__sort_udkvmsr_broadcast__broadcast_node = 44;
+    constexpr EventSymbol test_sort__sort_udkvmsr_broadcast__broadcast_ud = 45;
+    constexpr EventSymbol test_sort__sort_udkvmsr_broadcast__broadcast_ud_fin = 46;
+    constexpr EventSymbol test_sort__sort_udkvmsr_broadcast__broadcast_node_fin = 47;
+    constexpr EventSymbol test_sort__sort_udkvmsr_broadcast__broadcast_global_fin = 48;
+    constexpr EventSymbol test_sort__sort_udkvmsr_broadcast__broadcast_value_to_scratchpad = 49;
+    constexpr EventSymbol test_sort__distributed_sort_sp__init = 50;
+    constexpr EventSymbol test_sort__distributed_sort_sp__sp_setup = 51;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_setup = 52;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_store = 53;
+    constexpr EventSymbol test_sort__distributed_sort_sp____dram_store_ret = 54;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_store_ret = 55;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_load = 56;
+    constexpr EventSymbol test_sort__distributed_sort_sp__pivot_partition = 57;
+    constexpr EventSymbol test_sort__distributed_sort_sp__setup_pivot_partition = 58;
+    constexpr EventSymbol test_sort__distributed_sort_sp__insertion_sort = 59;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_load_ret_8 = 60;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_load_ret_7 = 61;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_load_ret_6 = 62;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_load_ret_5 = 63;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_load_ret_4 = 64;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_load_ret_3 = 65;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_load_ret_2 = 66;
+    constexpr EventSymbol test_sort__distributed_sort_sp__dram_load_ret_1 = 67;
+    constexpr EventSymbol test_sort__distributed_sort = 68;
+    constexpr EventSymbol test_sort__updown_init_step2_per_lane = 69;
+    constexpr EventSymbol test_sort__updown_init_udkvmsr = 70;
+    constexpr EventSymbol test_sort__updown_local_sorting = 71;
+    constexpr EventSymbol test_sort__updown_local_sorting_per_lane = 72;
+    constexpr EventSymbol test_sort__updown_local_sorting_per_lane_step2 = 73;
+    constexpr EventSymbol test_sort__updown_local_sorting_per_lane_step2_pre = 74;
+    constexpr EventSymbol test_sort__updown_local_sorting_per_lane_step2_dummy = 75;
+    constexpr EventSymbol test_sort__updown_local_sorting_per_lane_step3 = 76;
+    constexpr EventSymbol test_sort__updown_local_sorting_per_lane_step4 = 77;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step1 = 78;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step1_per_lane = 79;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step2 = 80;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step2_per_lane = 81;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step2_per_lane_step2 = 82;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step2_per_lane_step3 = 83;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step3 = 84;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step3_step2 = 85;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step3_step3 = 86;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step4 = 87;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step4_per_lane = 88;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step4_per_lane_step2 = 89;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step4_per_lane_step3 = 90;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step4_per_lane_step4 = 91;
+    constexpr EventSymbol test_sort__updown_parallel_prefix_sum_step4_per_lane_step5 = 92;
+    constexpr EventSymbol test_sort__updown_final = 93;
+    constexpr EventSymbol test_sort__sort_udkvmsr__kv_map = 94;
+    constexpr EventSymbol test_sort__sort_udkvmsr__kv_reduce = 95;
+    constexpr EventSymbol test_sort__updown_dummy = 96;
+    constexpr EventSymbol updown_init = 97;
+    constexpr EventSymbol updown_terminate = 98;
+
+} // namespace
+
+#endif

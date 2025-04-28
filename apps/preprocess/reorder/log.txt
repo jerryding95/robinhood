@@ -1,0 +1,65 @@
+nnodes=18772
+error degree deg[77]=179, deg[78]=180
+error degree deg[232]=133, deg[233]=134
+error degree deg[261]=129, deg[262]=130
+error degree deg[592]=94, deg[593]=95
+error degree deg[639]=91, deg[640]=92
+error degree deg[649]=90, deg[650]=91
+error degree deg[700]=87, deg[701]=88
+error degree deg[716]=86, deg[717]=87
+error degree deg[785]=83, deg[786]=84
+error degree deg[1182]=69, deg[1183]=70
+error degree deg[1465]=62, deg[1466]=63
+error degree deg[1549]=60, deg[1550]=61
+error degree deg[1558]=60, deg[1559]=61
+error degree deg[1617]=58, deg[1618]=59
+error degree deg[1687]=56, deg[1688]=57
+error degree deg[1950]=51, deg[1951]=52
+error degree deg[1966]=51, deg[1967]=52
+error degree deg[2056]=50, deg[2057]=51
+error degree deg[2144]=49, deg[2145]=50
+error degree deg[2192]=48, deg[2193]=49
+error degree deg[2235]=48, deg[2236]=49
+error degree deg[2686]=43, deg[2687]=44
+error degree deg[2892]=40, deg[2893]=41
+error degree deg[2929]=40, deg[2930]=41
+error degree deg[3147]=38, deg[3148]=39
+error degree deg[3547]=34, deg[3548]=35
+error degree deg[3801]=32, deg[3802]=33
+error degree deg[4155]=29, deg[4156]=30
+error degree deg[4175]=29, deg[4176]=30
+error degree deg[4236]=29, deg[4237]=30
+error degree deg[4617]=26, deg[4618]=27
+error degree deg[4635]=26, deg[4636]=27
+error degree deg[5010]=24, deg[5011]=25
+error degree deg[5186]=22, deg[5187]=23
+error degree deg[5293]=22, deg[5294]=23
+error degree deg[5804]=19, deg[5805]=20
+error degree deg[6724]=16, deg[6725]=17
+error degree deg[6931]=15, deg[6932]=16
+error degree deg[7430]=13, deg[7431]=14
+error degree deg[7452]=13, deg[7453]=14
+error degree deg[7889]=12, deg[7890]=13
+error degree deg[8450]=10, deg[8451]=11
+error degree deg[8501]=10, deg[8502]=11
+error degree deg[9058]=9, deg[9059]=10
+error degree deg[10171]=7, deg[10172]=8
+error degree deg[10870]=6, deg[10871]=7
+error degree deg[11464]=5, deg[11465]=6
+error degree deg[12256]=4, deg[12257]=5
+error degree deg[12391]=4, deg[12392]=5
+error degree deg[13246]=3, deg[13247]=4
+error degree deg[13415]=3, deg[13416]=4
+error degree deg[13994]=3, deg[13995]=4
+error degree deg[15219]=2, deg[15220]=3
+error degree deg[15657]=2, deg[15658]=3
+error degree deg[17263]=1, deg[17264]=2
+error degree deg[17718]=0, deg[17719]=1
+num_nodes = 18772
+Adjacency Lists created
+Binfile:/home/jiya/dataset/mining_dataset_reorderv2/ca-AstroPh.txt.bin
+Size of uint64_t:8, writing num_nodes:18772, neighbor_array_size:396100
+Binfile:/home/jiya/dataset/mining_dataset_reorderv2/ca-AstroPh.txt_gv.bin
+Size of uint64_t:8, writing num_nodes:18772 in new file
+Binfile:/home/jiya/dataset/mining_dataset_reorderv2/ca-AstroPh.txt_nl.bin
+Size of uint64_t:8, writing nlarray:396100 in NL
