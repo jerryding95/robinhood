@@ -1,0 +1,27 @@
+thread EventRateTest {
+    long counter;
+    long termination;
+    int* local finalFlag;
+
+    event SendEvents(long numEvents, int* local final){
+        counter = numEvents;
+        termination = numEvents;
+        finalFlag = final;
+        long * local notUsed;
+
+        long ew = evw_update_event(CEVNT, ReceiveEvent, 0);
+        while(counter > 0) {
+            send_event(ew, 0, ew);
+            counter = counter - 1;
+        }
+    }
+
+    event ReceiveEvent() {
+        counter = counter + 1;
+        if (counter == termination) {
+            finalFlag[0] = 1;
+            yield_terminate;
+        }
+    }
+
+}

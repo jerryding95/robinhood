@@ -1,0 +1,85 @@
+thread simple_broadcast {
+    event do_broadcast(long value, int num_lanes) {
+        long * local res = LMBASE;
+        res[0] = value;
+        int cnt;
+        // Set new event label
+        long evw = evw_update_event(CEVNT, broadcast_rcv, 1);
+        // create a new thread
+        evw = evw_update_thread(evw, NEWTH);
+        // Create event for each lane
+        int dest_netid = NETID;
+        for (cnt = 0; cnt < num_lanes; cnt = cnt + 1) {
+            if (LID != cnt) {
+                // Update the networkID
+                dest_netid = netid_update_lid(dest_netid, cnt)
+                // Update the Event word
+                evw = evw_update_netid(evw, dest_netid)
+                // Send the event to a lane
+                send_event(evw, value, CCONT);
+            }
+        }
+    }
+
+    event broadcast_rcv(long value) {
+        long * local res = LMBASE;
+        res[0] = value;
+        yield_terminate;
+    }
+}
+
+thread tree_broadcast {
+    int nlanes;
+    long val;
+    long * local ops;
+    // This event creates a broadcast operation
+    event init(long value, int num_lanes, int num_levels) {
+        ops = LMBASE + sizeof(long);
+        long evw;
+        if (num_levels == 1) {
+            nlanes = num_lanes;
+            val = value;
+            evw = evw_update_event(CEVNT, do_broadcast, 0);
+            send_event(evw, 0, CCONT);
+            long * local res = LMBASE;
+            res[0] = value;
+        } else {
+            ops[0] = value;
+            nlanes = num_lanes/2;
+            ops[1] = nlanes;
+            ops[2] = num_levels - 1;
+            send_event(CEVNT, ops, sizeof(long)*3, CCONT);
+            evw = evw_update_thread(evw, NEWTH);
+            int dest = NETID;
+            dest = (dest & 0xFFFF_0000) + LID + nlanes;
+            send_event(evw, dest, ops, sizeof(long)*3, CCONT);
+        }
+    }
+
+    event do_broadcast() {
+        int cnt = 0;
+        // Create event for each lane
+        // Set new event label
+        long evw = evw_update_event(CEVNT, broadcast_rcv, 1);
+        // create a new thread
+        evw = evw_update_thread(evw, NEWTH);
+        int dest_netid = NETID;
+        for (cnt = 0; cnt < nlanes; cnt = cnt + 1)
+        {
+            if (LID != cnt) {
+                // Update the networkID
+                dest_netid = netid_update_lid(dest_netid, cnt)
+                // Update the Event word
+                evw = evw_update_netid(evw, dest_netid)
+                // Send the event to a lane
+                send_event(evw, val, broadcast_rcv);
+            }
+        }
+    }
+
+    event broadcast_rcv(long value) {
+        long * local res = LMBASE;
+        res[0] = value;
+        yield_terminate;
+    }
+}

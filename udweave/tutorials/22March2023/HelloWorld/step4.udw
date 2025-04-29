@@ -1,0 +1,22 @@
+// THIS CODE WILL NOT BUILD DUE TO DEPRECATED FEATURES.
+// WE LEAVE IT HERE FOR COMPLETENESS OF THE TUTORIAL
+
+
+thread exampleThread {
+    long aThreadLocal;
+
+    event begin(long aValue) {
+        aThreadLocal = aValue;
+        long evWord;
+        // evw_update_event(Source Event Word, Event Label, Number of Operands)
+        evWord = evw_update_event(CEVNT, end, 0);
+        //send_event(long unsigned evWord, int unsigned netID, <type> data, long unsigned contWord)
+        send_event(evWord, NETID, aThreadLocal, CCONT);
+        aThreadLocal = aThreadLocal + 1;
+    }
+
+    event end() {
+        aThreadLocal = aThreadLocal - 1;
+        yield_terminate;
+    }
+}

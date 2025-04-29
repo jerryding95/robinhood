@@ -1,0 +1,9 @@
+thread exampleThread{
+    event begin() {
+        long evWord;
+        // evw_update_event(Source Event Word, Event Label, Number of Operands)
+        evWord = evw_update_event(CEVNT, end, 0);
+    }
+
+    event end() {  }
+}

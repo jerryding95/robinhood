@@ -7,10 +7,53 @@ from libraries.UDMapShuffleReduce.linkable.LinkableKVMapShuffleCombineTPL import
 
 from libraries.UDMapShuffleReduce.utils.OneDimArrayKeyValueSet import OneDimKeyValueSet
 from libraries.UDMapShuffleReduce.utils.IntermediateKeyValueSet import IntermediateKeyValueSet
-from libraries.UDMapShuffleReduce.utils.SHTKeyValueSet import SHTKeyValueSet
+# from libraries.UDMapShuffleReduce.utils.SHTKeyValueSet import SHTKeyValueSet
 from libraries.UDMapShuffleReduce.linkable.LinkableLMCache import LMCache
 
 import LMStaticMap as Defs
+
+cur_type = 4
+
+if cur_type == 0:   
+    # non_lb
+    EXTENSION = 'non_load_balancing'
+    test_ws = False
+    test_random = False
+    LB_TYPE = ['mapper', 'reducer']
+
+elif cur_type == 1:
+    # work_stealing
+    EXTENSION = 'load_balancer'
+    test_ws = True
+    test_random = False
+    LB_TYPE = ['mapper', 'reducer']
+
+elif cur_type == 2:
+    # full_lb
+    EXTENSION = 'load_balancer'
+    test_ws = False
+    test_random = False
+    LB_TYPE = ['mapper', 'reducer']
+
+elif cur_type == 3:
+    # mapper_lb
+    EXTENSION = 'load_balancer'
+    test_ws = False
+    test_random = False
+    LB_TYPE = ['mapper']
+
+elif cur_type == 4:
+    # random_lb
+    EXTENSION = 'load_balancer'
+    test_ws = False
+    test_random = True
+    LB_TYPE = ['mapper', 'reducer']
+    
+DEBUG_FLAG = False
+rtype = 'lane' if test_ws else 'ud'
+multi = not test_ws
+map_ws = test_ws
+red_ws = test_ws
 
 '''
 UDKVMSR program configuration. The following parameters are required:
@@ -126,38 +169,24 @@ class TestMapShuffleReduce(UDKeyValueMapShuffleReduceTemplate):
 #             tran.writeAction(f"print '[DEBUG][NWID %ld][combing_func] key %ld combine result value %ld' {'X0'} {key} {result_regs[i]}")
 
 
-EXTENSION = 'load_balancer'
-test_ws = False
-# DEBUG_FLAG = True
-LB_TYPE = ['mapper','reducer']
-rtype = 'lane' if test_ws else 'ud'
-multi = not test_ws
-map_ws = test_ws
-red_ws = test_ws
+# EXTENSION = 'load_balancer'
+# test_ws = False
+# # DEBUG_FLAG = True
+# LB_TYPE = ['mapper','reducer']
+# rtype = 'lane' if test_ws else 'ud'
+# multi = not test_ws
+# map_ws = test_ws
+# red_ws = test_ws
 
 @efaProgram
 def GenKMerCntMSREFA(efa: EFAProgram):
 
     # testMSR = TestMapShuffleReduce(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=DEBUG_FLAG)
     # testMSR = TestMapShuffleReduce(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=DEBUG_FLAG, extension="load_balancer", load_balancer_type=["mapper","reducer"], claim_multiple_work = True)
-    tp = 4
-    if tp == 1:
-    # non_lb
-        testMSR = TestMapShuffleReduce(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=DEBUG_FLAG, extension="non_load_balancing")
-    elif tp == 2:
-    # work_stealing
-        testMSR = TestMapShuffleReduce(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=DEBUG_FLAG, extension="load_balancer", load_balancer_type=["mapper","reducer"], claim_multiple_work = False, grlb_type = 'lane', test_map_ws=True, test_reduce_ws=True)
-    elif tp == 3:
-    #mapper_lb
-        testMSR = TestMapShuffleReduce(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=DEBUG_FLAG, extension="load_balancer", load_balancer_type=["mapper"])
 
-    elif tp == 4:
-    #full_lb
-        testMSR = TestMapShuffleReduce(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=DEBUG_FLAG, extension="load_balancer", load_balancer_type=["mapper","reducer"])
+    testMSR = TestMapShuffleReduce(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=DEBUG_FLAG, extension = EXTENSION, load_balancer_type = LB_TYPE, grlb_type = rtype, 
+                                    claim_multiple_work = multi, test_map_ws=map_ws, test_reduce_ws=red_ws, random_lb=test_random)
 
-    else:
-        print("Invalid type")
-        exit()
 
     
     # testMSR = TestMapShuffleReduce(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=DEBUG_FLAG, extension=EXTENSION, load_balancer_type = LB_TYPE, grlb_type = rtype,  claim_multiple_work = multi, test_map_ws=map_ws, test_reduce_ws=red_ws)

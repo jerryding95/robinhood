@@ -1,0 +1,73 @@
+from EFA_v2 import *
+
+def GenerateFanOutTest():
+    efa = EFA([])
+    efa.code_level = 'machine'
+    
+    state0 = State() #Initial State? 
+    efa.add_initId(state0.state_id)
+    efa.add_state(state0)
+
+    #Add events to dictionary 
+    event_map = {
+        'launch_fan_out':0,
+        'fan_out':1,
+        'fan_in':2,
+        'fan_in_terminate':3
+    }
+
+    '''
+    OB_0:   Num of elements/leaves/unique lanes
+    OB_1:   log2(k)
+    OB_3:   Handshake flag addr
+    '''
+    tran0 = state0.writeTransition("eventCarry", state0, state0, event_map['launch_fan_out'])
+    tran0.writeAction("mov_ob2reg OB_2 UDPR_5")
+    tran0.writeAction("mov_ob2reg OB_3 UDPR_6")
+    tran0.writeAction("mov_imm2reg UDPR_0 0")
+    tran0.writeAction("mov_reg2reg NWID UDPR_1 0")
+    tran0.writeAction("mov_imm2reg UDPR_2 1")
+    tran0.writeAction("lshift_t UDPR_2 OB_1 UDPR_2")
+    tran0.writeAction("rshift_t OB_0 OB_1 UDPR_3 1")
+    tran0.writeAction(f"init_fan_out_loop: ev_update_2 UDPR_4 {event_map['fan_out']} 255 5")
+    tran0.writeAction("ev_update_reg_2 UDPR_4 UDPR_4 UDPR_1 UDPR_1 8")
+    tran0.writeAction(f"sendr_wret UDPR_4 UDPR_1 {event_map['fan_in_terminate']} UDPR_3 OB_1")
+    tran0.writeAction("add UDPR_1 UDPR_3 UDPR_1")
+    tran0.writeAction("addi UDPR_0 UDPR_0 1")
+    tran0.writeAction("blt UDPR_0 UDPR_2 init_fan_out_loop")
+    tran0.writeAction("yield")
+
+    tran1 = state0.writeTransition("eventCarry", state0, state0, event_map['fan_out'])
+    tran1.writeAction("blec OB_0 1 finish")
+    tran1.writeAction("addi NWID UDPR_1 0")
+    tran1.writeAction("mov_imm2reg UDPR_2 1")
+    tran1.writeAction("lshift_t UDPR_2 OB_1 UDPR_2")
+    tran1.writeAction("rshift_t OB_0 OB_1 UDPR_3 1")
+
+    tran1.writeAction(f"fan_out_loop: ev_update_2 UDPR_4 {event_map['fan_out']} 255 5")
+    tran1.writeAction("ev_update_reg_2 UDPR_4 UDPR_4 UDPR_1 UDPR_1 8")
+    tran1.writeAction(f"sendr_wret UDPR_4 UDPR_1 {event_map['fan_in']} UDPR_3 OB_1")
+    tran1.writeAction("add UDPR_1 UDPR_3 UDPR_1")
+    tran1.writeAction("addi UDPR_0 UDPR_0 1")
+    tran1.writeAction("blt UDPR_0 UDPR_2 fan_out_loop")
+    tran1.writeAction("yield")
+
+
+    tran1.writeAction("finish: sendr_reply UDPR_2 UDPR_2")
+    tran1.writeAction("yield_terminate")
+
+    tran2 = state0.writeTransition("eventCarry", state0, state0, event_map['fan_in'])
+    tran2.writeAction("subi UDPR_2 UDPR_2 1")
+    tran2.writeAction("bgtc UDPR_2 0 continue")
+    tran2.writeAction("sendr_reply UDPR_2 UDPR_2")
+    tran2.writeAction("yield_terminate")
+    tran2.writeAction("continue: yield")
+
+    tran3 = state0.writeTransition("eventCarry", state0, state0, event_map['fan_in_terminate'])
+    tran3.writeAction("subi UDPR_2 UDPR_2 1")
+    tran3.writeAction("bgtc UDPR_2 0 continue_root")
+    tran3.writeAction("move UDPR_5 0(UDPR_6) 0 8")
+    tran3.writeAction("yield_terminate")
+    tran3.writeAction("continue_root: yield")
+    
+    return efa

@@ -10,9 +10,16 @@ WORD_SIZE = 8
 LOG2_WORD_SIZE = 3
 TOP_FLAG_OFFSET = 0
 
-# EXTENSION = 'non_load_balancing'
-# EXTENSION = 'original'
+
 EXTENSION = 'load_balancer'
+test_ws = False
+test_random = True
+DEBUG_FLAG = False
+LB_TYPE = ['mapper','reducer']
+rtype = 'lane' if test_ws else 'ud'
+multi = not test_ws
+map_ws = test_ws
+red_ws = test_ws
 
 '''
 Below is an naive map reduce example. The map function masks the input key by the number of workerand send it with input value to the reducer.
@@ -70,7 +77,10 @@ def GenMSRPagerankEFA(efa: EFAProgram):
         lm_mode:        scratchpad addressing mode, determines the value in X7 (optional), default is 1
         debug_flag:     enable debug print (optional), default is False
     '''
-    pagerankMSR = PagerankMapShuffleReduce(efa=efa, task_name="pr", meta_data_offset=64, debug_flag=False, extension=EXTENSION, load_balancer_type = ['mapper','reducer'])
+    # pagerankMSR = PagerankMapShuffleReduce(efa=efa, task_name="pr", meta_data_offset=64, debug_flag=False, extension=EXTENSION, load_balancer_type = ['mapper','reducer'])
+    pagerankMSR = PagerankMapShuffleReduce(efa=efa, task_name="pr", meta_data_offset=64, debug_flag=DEBUG_FLAG, 
+                                    extension = EXTENSION, load_balancer_type = LB_TYPE, grlb_type = rtype, 
+                                    claim_multiple_work = multi, test_map_ws=map_ws, test_reduce_ws=red_ws, random_lb=test_random)
     # Setup the input and output key value set. 
     pagerankMSR.set_input_kvset(OneDimKeyValueSet("Input", element_size=4, bypass_gen_partition=True))
     pagerankMSR.set_intermediate_kvset(IntermediateKeyValueSet("Intermediate", key_size=1, value_size=1))
@@ -83,7 +93,7 @@ def GenMSRPagerankEFA(efa: EFAProgram):
     
     pagerankMSR.generate_udkvmsr_task()
     
-    DEBUG_FLAG = pagerankMSR.debug_flag
+    # DEBUG_FLAG = pagerankMSR.debug_flag
 
     temp_reg    = "UDPR_0"
     lm_base_reg = "UDPR_1"
@@ -102,7 +112,7 @@ def GenMSRPagerankEFA(efa: EFAProgram):
       X14:  Number of elements in the output kvset (1D array)
     '''
     init_tran = pagerankMSR.state.writeTransition("eventCarry", pagerankMSR.state, pagerankMSR.state, 'updown_init')
-    init_tran.writeAction(f"print '[DEBUG][NWID %d] Event <updown_init> ' {'X0'} ")
+    # init_tran.writeAction(f"print '[DEBUG][NWID %d] Event <updown_init> ' {'X0'} ")
     # Move the UDKVMSR call parameters to scratchpad.
     init_tran.writeAction(f"movir {send_buffer} {pagerankMSR.send_buffer_offset}")
     init_tran.writeAction(f"add {'X7'} {send_buffer} {send_buffer}")

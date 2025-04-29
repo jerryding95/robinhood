@@ -1168,7 +1168,7 @@ thread Distributed_sort {
 	event sort_phase1_init() {
 		asm {"perflog 1 0 'sorting phase 1'" };
 #ifdef DEBUG
-		print("sort phase1");
+		print("start sort phase1");
 #endif
 		// construct UDKVMSR call
         unsigned long* local sendbuf_lm_ptr = LMBASE + SEND_BUFFER_OFFSET;
@@ -1220,7 +1220,7 @@ thread Distributed_sort {
 	}
 
 	event sort_phase1_post_processing() {
-		print("in sort_phase1_post_processing");
+		print("in sort_phase1_post_processing,");
 		long* local sp_ptr = LMBASE + SORT_OFFSET;
 		unsigned long evw = evw_new(NETID, phase1_bin_size_cache::cache_flush);
 		// unsigned long evw = evw_update_event(CEVNT, sort_phase1_init);

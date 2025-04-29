@@ -1,0 +1,307 @@
+thread sort {
+	long* dram_addr;
+	long num_elements;
+	long* curr_addr;
+	long rem;
+	long* local lmbase;
+	long present;
+	long thres;
+
+	event setup(long* addr, long num) {
+		long unsigned evword = evw_update_event(CEVNT, dram_load, 1);
+
+		if (num == 1) {
+			lmbase = LMBASE;
+			lmbase[0] = 1;
+
+			yield_terminate;
+		}
+
+		dram_addr = addr;
+		num_elements = num;
+
+		rem = num;
+		curr_addr = addr;
+		lmbase = LMBASE + 8;
+		present = 1;
+		thres = 18;
+
+		send_event(evword, num_elements, evword);
+	}
+
+	event dram_store() {
+		long unsigned evword;
+
+                rem = num_elements;
+                curr_addr = dram_addr;
+
+                while (rem > 0) {
+                        if (rem > 7) {
+                                send_dram_write(curr_addr, lmbase, 8, dram_store_ret);
+
+                                rem = rem - 8;
+                                curr_addr = curr_addr + 64;
+                                lmbase = lmbase + 64;
+                        } elif (rem == 7) {
+                                send_dram_write(curr_addr, lmbase, 7, dram_store_ret);
+                                rem = 0;
+                        } elif (rem == 6) {
+                                send_dram_write(curr_addr, lmbase, 6, dram_store_ret);
+                                rem = 0;
+                        } elif (rem == 5) {
+                                send_dram_write(curr_addr, lmbase, 5, dram_store_ret);
+                                rem = 0;
+                        } elif (rem == 4) {
+                                send_dram_write(curr_addr, lmbase, 4, dram_store_ret);
+                                rem = 0;
+                        } elif (rem == 3) {
+                                send_dram_write(curr_addr, lmbase, 3, dram_store_ret);
+                                rem = 0;
+                        } elif (rem == 2) {
+                                send_dram_write(curr_addr, lmbase, 2, dram_store_ret);
+                                rem = 0;
+                        } elif (rem == 1) {
+                                send_dram_write(curr_addr, lmbase, 1, dram_store_ret);
+                                rem = 0;
+                        }
+                }
+
+                evword = evw_update_event(CEVNT, __dram_store_ret, 1);
+                send_event(evword, num_elements, evword);
+        }
+
+	event __dram_store_ret() {
+                lmbase = LMBASE;
+                lmbase[0] = 1;
+
+                yield_terminate;
+        }
+
+        event dram_store_ret() {
+                yield;
+        }
+
+	event dram_load() {
+		long unsigned evword;
+
+		if (rem > 7) {
+			send_dram_read(curr_addr, 8, dram_load_ret_8);
+		} elif (rem == 7) {
+			send_dram_read(curr_addr, 7, dram_load_ret_7);
+		} elif (rem == 6) {
+			send_dram_read(curr_addr, 6, dram_load_ret_6);
+		} elif (rem == 5) {
+			send_dram_read(curr_addr, 5, dram_load_ret_5);
+		} elif (rem == 4) {
+			send_dram_read(curr_addr, 4, dram_load_ret_4);
+		} elif (rem == 3) {
+			send_dram_read(curr_addr, 3, dram_load_ret_3);
+		} elif (rem == 2) {
+			send_dram_read(curr_addr, 2, dram_load_ret_2);
+		} elif (rem == 1) {
+			send_dram_read(curr_addr, 1, dram_load_ret_1);
+		} else {
+			long l = 0;
+			long r = num_elements - 1;
+
+			lmbase = LMBASE + 8;
+
+			if (num_elements < thres) {
+				evword = evw_update_event(CEVNT, insertion_sort, 2);
+			} else {
+				evword = evw_update_event(CEVNT, setup_pivot_partition, 2);
+			}
+
+			send_event(evword, l, r, evword);
+		}
+	}
+
+	event pivot_partition(long left, long right) {
+                long pivot;
+                long i = left - 1;
+                long j;
+                long temp;
+                long unsigned evword;
+		long k = right + 1;
+
+		present = present - 1;
+
+                pivot = lmbase[right];
+                for (j = left; j < k; j = j + 1) {
+                        temp = lmbase[j];
+                        if (temp < pivot) {
+                                i = i + 1;
+
+                                lmbase[j] = lmbase[i];
+                                lmbase[i] = temp;
+                        }
+                }
+
+                j = i + 1;
+
+                temp = lmbase[j];
+                lmbase[j] = lmbase[right];
+                lmbase[right] = temp;
+
+		temp = (i - left) + 1;
+		if (left < j) {
+			present = present + 1;
+
+			if (temp < thres) {
+				evword = evw_update_event(CEVNT, insertion_sort, 2);
+				send_event(evword, left, i, evword);
+			} else {
+				send_event(CCONT, left, i, CCONT);
+			}
+		}
+
+                j = j + 1;
+                temp = (right - j) + 1;
+
+		if (j < k) {
+			present = present + 1;
+
+			if (temp < thres) {
+				evword = evw_update_event(CEVNT, insertion_sort, 2);
+				send_event(evword, j, right, evword);
+			} else {
+				send_event(CCONT, j, right, CCONT);
+			}
+		}
+	}
+
+	event setup_pivot_partition(long left, long right) {
+                long mid = (left + right) >> 1;
+                long temp, temp2, temp3;
+                long res, res2, res3;
+                long unsigned evword = evw_update_event(CEVNT, pivot_partition, 2);
+
+                temp = lmbase[left];
+                temp2 = lmbase[mid];
+                temp3 = lmbase[right];
+
+                if (temp < temp2) {
+                        if (temp >= temp3) {
+                                lmbase[right] = temp;
+                                lmbase[left] = temp3;
+                        } elif (temp2 < temp3) {
+                                lmbase[right] = temp2;
+                                lmbase[mid] = temp3;
+                        }
+                } else {
+                        if (temp < temp3) {
+                                lmbase[right] = temp;
+                                lmbase[left] = temp3;
+                        } elif (temp2 >= temp3) {
+                                lmbase[right] = temp2;
+                                lmbase[mid] = temp3;
+                        }
+                }
+
+                send_event(evword, left, right, CEVNT);
+        }
+
+	event insertion_sort(long left, long right) {
+                long i, j, tmp;
+                long val;
+                long unsigned evword;
+		long k = right + 1;
+
+                for (i = left + 1; i < k; i = i + 1) {
+                        val = lmbase[i];
+                        tmp = i;
+
+                        for (j = left; j < i; j = j + 1) {
+                                rem = lmbase[j];
+                                if (val < rem) {
+                                        lmbase[j] = val;
+                                        val = rem;
+
+                                        tmp = j + 1;
+                                        j = i;
+                                }
+                        }
+
+                        while (tmp < i) {
+                                rem = lmbase[tmp];
+                                lmbase[tmp] = val;
+                                val = rem;
+
+                                tmp = tmp + 1;
+                        }
+                        lmbase[i] = val;
+                }
+
+		present = present - 1;
+		if (present == 0) {
+	                evword = evw_update_event(CEVNT, dram_store, 1);
+		        send_event(evword, num_elements, evword);
+		}
+        }
+
+	event dram_load_ret_8(long op0, long op1, long op2, long op3, long op4, long op5, long op6, long op7) {
+		long unsigned evword = evw_update_event(CEVNT, dram_load, 1);
+		copyOperands(op0, lmbase, 8);
+
+		curr_addr = curr_addr + 64;
+		lmbase = lmbase + 64;
+		rem = rem - 8;
+		send_event(evword, num_elements, evword);
+	}
+
+	event dram_load_ret_7(long op0, long op1, long op2, long op3, long op4, long op5, long op6) {
+		long unsigned evword = evw_update_event(CEVNT, dram_load, 1);
+		copyOperands(op0, lmbase, 7);
+
+		rem = 0;
+		send_event(evword, num_elements, evword);
+	}
+
+	event dram_load_ret_6(long op0, long op1, long op2, long op3, long op4, long op5) {
+		long unsigned evword = evw_update_event(CEVNT, dram_load, 1);
+		copyOperands(op0, lmbase, 6);
+
+		rem = 0;
+		send_event(evword, num_elements, evword);
+	}
+
+	event dram_load_ret_5(long op0, long op1, long op2, long op3, long op4) {
+		long unsigned evword = evw_update_event(CEVNT, dram_load, 1);
+		copyOperands(op0, lmbase, 5);
+
+		rem = 0;
+		send_event(evword, num_elements, evword);
+	}
+
+	event dram_load_ret_4(long op0, long op1, long op2, long op3) {
+		long unsigned evword = evw_update_event(CEVNT, dram_load, 1);
+		copyOperands(op0, lmbase, 4);
+
+		rem = 0;
+		send_event(evword, num_elements, evword);
+	}
+
+	event dram_load_ret_3(long op0, long op1, long op2) {
+		long unsigned evword = evw_update_event(CEVNT, dram_load, 1);
+		copyOperands(op0, lmbase, 3);
+
+		rem = 0;
+		send_event(evword, num_elements, evword);
+	}
+
+	event dram_load_ret_2(long op0, long op1) {
+		long unsigned evword = evw_update_event(CEVNT, dram_load, 1);
+		copyOperands(op0, lmbase, 2);
+
+		rem = 0;
+		send_event(evword, num_elements, evword);
+	}
+
+	event dram_load_ret_1(long op0) {
+		long unsigned evword = evw_update_event(CEVNT, dram_load, 1);
+		copyOperands(op0, lmbase, 1);
+
+		rem = 0;
+		send_event(evword, num_elements, evword);
+	}
+}

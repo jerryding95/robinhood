@@ -1,0 +1,35 @@
+thread memcpy {
+    int* dest;      // Keep destination pointer
+    int* source;      // Keep destination pointer
+    int total_size; // Keep total size
+    int count; // Keep track of number of writes
+    
+    event start(int* src, int* dst, int size) {
+        int off = 0;
+        count = 0;
+        dest = dst;
+        Source = src;
+        total_size = size;
+
+        for(int i = 0; i < size; i=i+1) {
+            send(src + off, sizeof(int), write);
+            off = off + sizeof(int);
+        }
+
+        off = 0;
+    }
+
+    event write(int* addr, int val) {
+        int off = addr - source;
+        send(off, val, sizeof(int), finish);
+    }
+
+    event finish(int val) {
+        count = count + sizeof(int);
+        if (count < total_size) {
+            yield;
+        } else {
+            yield_return;
+        }
+    }
+}

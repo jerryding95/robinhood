@@ -1,0 +1,31 @@
+thread MemReadBWTest {
+    long reqSize;
+    long* dramReadAddr;
+    long* local finalFlag;
+    long iterator;
+
+    event SendReads(long* idramReadAddr, long ireqSize, long ifinalFlag){
+        reqSize = ireqSize;
+        dramReadAddr = idramReadAddr;
+        finalFlag = ifinalFlag;
+        iterator = 0;
+
+        while(iterator < reqSize) {
+            send_dram_read(dramReadAddr,
+               64,
+               ReadReturns);
+            iterator = iterator + 64;
+            dramReadAddr = dramReadAddr + 64;
+        }
+        iterator = 0;
+    }
+
+    event ReadReturns() {
+        iterator = iterator + 64;
+        if (iterator == reqSize) {
+            finalFlag[0] = 1;
+            yield_terminate;
+        }
+    }
+
+}

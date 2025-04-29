@@ -10,10 +10,16 @@ from libraries.UDMapShuffleReduce.linkable.LinkableGlobalSync import Broadcast
 VECTOR_POINTER_OFFSET = HEAP_OFFSET
 SPMV_HEAP = VECTOR_POINTER_OFFSET + WORD_SIZE
 
-DEBUG_FLAG = False
-# EXTENSION = 'non_load_balancing'
 EXTENSION = 'load_balancer'
-# EXTENSION = 'original'
+test_ws = False
+test_random = True
+DEBUG_FLAG = False
+LB_TYPE = ['mapper','reducer']
+rtype = 'lane' if test_ws else 'ud'
+multi = not test_ws
+map_ws = test_ws
+red_ws = test_ws
+
 
 class SPMVMapShuffleReduce(UDKeyValueMapShuffleReduceTemplate):
     
@@ -180,7 +186,7 @@ def init_event(state, task):
       ##############
     '''
     
-    init_tran.writeAction(f"print '[DEBUG][NWID %d] Event <updown_init> ' {'X0'} ")
+    # init_tran.writeAction(f"print '[DEBUG][NWID %d] Event <updown_init> ' {'X0'} ")
     init_tran.writeAction(f"perflog 1 0 'Updown Init'")
 
     # # Reset TOP_FLAG to 0
@@ -189,6 +195,7 @@ def init_event(state, task):
     # init_tran.writeAction(f"move {temp_reg} 0({lm_base_reg}) 0 {WORD_SIZE}")
 
     # Move the UDKVMSR call parameters to registers and HEAP area.
+    # init_tran.writeAction(f"print 'START'")
     init_tran.writeAction(f"addi {'X8'} {part_ptr} {0}")
     init_tran.writeAction(f"addi {'X9'} {part_per_lane} {0}")
     init_tran.writeAction(f"addi {'X10'} {num_lanes} {0}")
@@ -305,7 +312,10 @@ def term_event(state, task):
 def spmvMSREFA(efa):
 
     task_name = "spmv"
-    spmvMSR = SPMVMapShuffleReduce(efa=efa, task_name=task_name, meta_data_offset=UDKVMSR_0_OFFSET, debug_flag=DEBUG_FLAG, extension = EXTENSION, load_balancer_type = ['mapper','reducer'], claim_multiple_work=True)
+    # spmvMSR = SPMVMapShuffleReduce(efa=efa, task_name=task_name, meta_data_offset=UDKVMSR_0_OFFSET, debug_flag=DEBUG_FLAG, extension = EXTENSION, load_balancer_type = ['mapper','reducer'], claim_multiple_work=True)
+    spmvMSR = SPMVMapShuffleReduce(efa=efa, task_name=task_name, meta_data_offset=UDKVMSR_0_OFFSET, debug_flag=DEBUG_FLAG, 
+                                    extension = EXTENSION, load_balancer_type = LB_TYPE, grlb_type = rtype, 
+                                    claim_multiple_work = multi, test_map_ws=map_ws, test_reduce_ws=red_ws, random_lb=test_random)
     spmvMSR.set_input_kvset(OneDimKeyValueSet("Test input", element_size=2) )
     spmvMSR.set_intermediate_kvset(IntermediateKeyValueSet("Test intermediate", key_size=1, value_size=1))
     spmvMSR.set_output_kvset(OneDimKeyValueSet("Test output", element_size=1) )

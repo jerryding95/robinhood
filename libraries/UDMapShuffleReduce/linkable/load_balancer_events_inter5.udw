@@ -1,0 +1,408 @@
+
+
+#define intermediate_ptr_offset 111111
+#define intermediate_cache_entry_size 222222
+#define intermediate_cache_offset 333333
+#define materializing_metadata_offset 444444
+#define materialize_kv_cache_offset 555555
+#define materialize_kv_cache_size 666666
+#define unresolved_kv_count_offset 888888
+#define intermediate_cache_count 999999
+#define materialize_kv_cache_count 101010
+#define inter_kvpair_size 7
+
+
+thread receiver {
+	// event receive_intermediate_kv(unsigned long key, unsigned long value){
+		
+	// }
+
+
+
+
+	// event fetched_kv_ptr_for_cache(unsigned long kv_arr_addr, unsigned long entry_addr){
+	// 	// Decrement unresolved_kv_count by 1
+	// 	unsigned long* local ptr = LMBASE + unresolved_kv_count_offset;
+	// 	ptr[0] = ptr[0] - 1;
+	// 	// Locate intermediate_cache entry
+	// 	ptr = LMBASE + intermediate_ptr_offset;
+	// 	unsigned long base_addr = ptr[0];
+	// 	unsigned long* local entry_ptr = LMBASE + intermediate_cache_offset;
+	// 	entry_ptr = entry_ptr + (entry_addr - base_addr) * intermediate_cache_entry_size;
+
+	// 	// Read key and check if already claimed
+	// 	unsigned long returned_key = entry_ptr[0];
+	// 	unsigned long is_claimed = returned_key & 1;
+	// 	returned_key = returned_key >> 1;
+	// 	// Account for the dram request coming back
+	// 	unsigned long matched_count = 0;
+	// 	unsigned long* dest = entry_ptr[1];
+
+	// 	// Update kv_ptr if not claimed
+	// 	if (is_claimed == 0) {
+	// 		entry_ptr[1] = kv_arr_addr;
+	// 		dest = kv_arr_addr;
+	// 	}
+
+
+	// 	// Read materialize_kv_cache metadata
+	// 	ptr = LMBASE + materializing_metadata_offset;
+	// 	long* local start = ptr[0];
+	// 	long* local end = ptr[1];
+	// 	long is_empty = ptr[2];
+
+	// 	if (is_empty == 1){
+	// 		print("Lane %d receiver fetched_kv_ptr_for_cache gets empty cache! Terminate!", NETID);
+	// 	}
+
+	// 	unsigned long ret_cont_word;
+	// 	if (is_claimed == 1){ ret_cont_word = evw_update_event(CEVNT, receiver_update_unresolved_kv_count); }
+	// 	else{ ret_cont_word = evw_update_event(CEVNT, receiver_materialize_kv_ret); }
+		
+	// 	ret_cont_word = evw_update_thread(ret_cont_word, NEWTH);
+
+	// 	// If start >= end, set stop at max limit
+	// 	// Otherwise, set stop at end
+	// 	unsigned long* local stop;
+	// 	if (end > start){ stop = end;}
+	// 	else{ stop = LMBASE + materialize_kv_cache_offset + materialize_kv_cache_size; }
+
+	// 	// Iterate and update start until find an unmatch
+	// 	while (start < stop){
+	// 		if (start[0] != -1){
+	// 			if (start[0] != returned_key){
+	// 				break;
+	// 			}
+	// 			if (is_claimed==0){ 
+	// 				send_dram_write(dest, start, inter_kvpair_size, ret_cont_word); 
+	// 				dest = dest + inter_kvpair_size * 8;
+	// 			}
+	// 			else {
+	// 				unsigned long ev_word = dest;
+	// 				send_event(ev_word, start, inter_kvpair_size, ret_cont_word); 
+	// 			}
+	// 			matched_count = matched_count + 1;
+	// 			for (int i=0; i<inter_kvpair_size; i=i+1) { start[i] = -1; }
+	// 		}
+	// 		start = start + inter_kvpair_size * 8;
+	// 	}
+
+	// 	// If start hits either end or maximum limit
+	// 	// If hit maximum limit, reset start to minimum limit and keep iterating start
+	// 	if (start == stop && stop != end) {
+	// 		start = LMBASE + materialize_kv_cache_offset;
+	// 		while (start < end){
+	// 			if (start[0] != -1){
+	// 				if (start[0] != returned_key){
+	// 					break;
+	// 				}
+	// 				if (is_claimed==0){ 
+	// 					send_dram_write(dest, start, inter_kvpair_size, ret_cont_word); 
+	// 					dest = dest + inter_kvpair_size * 8;
+	// 				}
+	// 				else {
+	// 					unsigned long ev_word = dest;
+	// 					send_event(ev_word, start, inter_kvpair_size, ret_cont_word); 
+	// 				}
+	// 				matched_count = matched_count + 1;
+	// 				for (int i=0; i<inter_kvpair_size; i=i+1) { start[i] = -1; }
+	// 			}
+	// 			start = start + inter_kvpair_size * 8;
+	// 		}
+	// 	}
+
+	// 	// At this point, situation includes
+	// 	// 1. Start hits an unmatch, needs to continue iterating, then start != end
+	// 	// 2. Start == end and the first entry is an unmatch, then matched_count == 0
+	// 	// 3. Start hits end, stop iterating
+
+	// 	// If in situation 1 and 2, iterating end and update end
+	// 	if (start != end || matched_count == 0){
+	// 		ptr = start;
+	// 		unsigned long new_end = start;
+
+	// 		// If start >= end, set stop at max limit
+	// 		// Otherwise, set stop at end
+	// 		if (end > start){ stop = end;}
+	// 		else{ stop = LMBASE + materialize_kv_cache_offset + materialize_kv_cache_size; }
+
+	// 		// Iterate till stop
+	// 		while (ptr < stop) {
+	// 			if (ptr[0] != -1){
+	// 				if (ptr[0] == returned_key){
+	// 					if (is_claimed==0){ 
+	// 						send_dram_write(dest, ptr, inter_kvpair_size, ret_cont_word); 
+	// 						dest = dest + inter_kvpair_size * 8;
+	// 					}
+	// 					else {
+	// 						unsigned long ev_word = dest;
+	// 						send_event(ev_word, ptr, inter_kvpair_size, ret_cont_word); 
+	// 					}
+	// 					matched_count = matched_count + 1;
+	// 				}
+	// 				else{ new_end = ptr + inter_kvpair_size * 8; }
+	// 			}
+	// 			ptr = ptr + inter_kvpair_size * 8;
+	// 		}
+
+	// 		// If stop != end, meaning stop == max limit and start >= end
+	// 		// Reset ptr to beginning of cache and iterate till end
+	// 		if (stop != end) {
+	// 			ptr = LMBASE + materialize_kv_cache_offset;
+	// 			while (ptr < end) {
+	// 				if (ptr[0] != -1){
+	// 					if (ptr[0] == returned_key){
+	// 						if (is_claimed==0){ 
+	// 							send_dram_write(dest, ptr, inter_kvpair_size, ret_cont_word); 
+	// 							dest = dest + inter_kvpair_size * 8;
+	// 						}
+	// 						else {
+	// 							unsigned long ev_word = dest;
+	// 							send_event(ev_word, ptr, inter_kvpair_size, ret_cont_word); 
+	// 						}
+	// 						matched_count = matched_count + 1;
+	// 					}
+	// 					else{ new_end = ptr + inter_kvpair_size * 8; }
+	// 				}
+	// 				ptr = ptr + inter_kvpair_size * 8;
+	// 			}
+	// 		}
+	// 		end = new_end;
+	// 	}
+
+
+	// 	ptr = LMBASE + materializing_metadata_offset;
+	// 	ptr[0] = start;
+	// 	ptr[1] = end;
+	// 	if (start == end){ ptr[2] = 1; }
+	// 	else{ ptr[2] = 0; }
+
+	// 	if (is_claimed == 1){
+	// 		// If claimed, increment unresolved_kv_count by matched_count
+	// 		ptr = LMBASE + unresolved_kv_count_offset;
+	// 		ptr[0] = ptr[0] + matched_count;
+	// 	}
+	// 	else{
+	// 		// If not claimed, set kv rec number as matched_count
+	// 		entry_ptr[2] = matched_count;
+	// 	}
+		
+	// 	yield_terminate;
+
+	// }
+
+
+
+	event ud_fetched_kv_ptr_for_cache(unsigned long kv_arr_addr, unsigned long entry_addr){
+		unsigned long returned_key, is_claimed, ret_cont_word, base_ptr;
+		long* local ptr;
+		long* local entry_ptr;
+
+		// Get start spd address of this ud
+		base_ptr = LMBASE - ((NETID & 0x3F) << 16);
+		
+		// Locate intermediate_cache entry
+		ptr = base_ptr + intermediate_ptr_offset;
+		if (1){
+			// unsigned long tmp = (entry_addr - ptr[0]) / 8;
+			unsigned long tmp = ptr[0];
+			tmp = (entry_addr - tmp) / 8;
+			print("Lane %u received kv_ptr for %ld-key, operands %ld, %ld", NETID, tmp, kv_arr_addr, entry_addr);
+			// unsigned long tmp1 = (tmp % intermediate_cache_count) * intermediate_cache_entry_size * 8;
+			// tmp = (tmp / intermediate_cache_count) << 16;
+			// entry_ptr = base_ptr + tmp + intermediate_cache_offset + tmp1;
+			unsigned long tmp1 = tmp % intermediate_cache_count;
+			tmp1 = tmp1 * intermediate_cache_entry_size;
+			tmp1 = tmp1 * 8;
+			tmp = tmp / intermediate_cache_count;
+			tmp = tmp << 16;
+			entry_ptr = base_ptr + tmp;
+			entry_ptr = entry_ptr + tmp1;
+			entry_ptr = entry_ptr + intermediate_cache_offset;
+		}
+
+		// Read key
+		returned_key = entry_ptr[0];
+		is_claimed = returned_key & 1;
+		returned_key = returned_key >> 1;
+		print("Lane %u received kv_ptr for key %ld with bin address %lu(0x%lx), entry address %lu", NETID, returned_key, kv_arr_addr, kv_arr_addr, entry_addr);
+
+		// Read cache start and num
+		// unsigned long* local start;
+		// unsigned long num;
+		// asm {
+		// 	"movlr 13(%[entry_ptr]) %[start] 0 3
+		// 	movlr 16(%[entry_ptr]) %[num] 0 4"
+		// } : [entry_ptr] "r" (entry_ptr), [start] "r" (start), [num] "r" (num);
+
+		unsigned long num;
+		ptr = entry_ptr + 16;
+		if(1) {
+			unsigned long tmp, cswp_ret=num+1;
+			while (num != cswp_ret) {
+				num = ptr[0];
+				asm {
+					"movlr 0(%[ptr]) %[tmp] 0 4
+					cswp %[ptr] %[cswp_ret] %[num] %[tmp]"
+				} : [ptr] "r" (ptr), [cswp_ret] "r" (cswp_ret), [tmp] "r" (tmp), [num] "r" (num);
+			}
+			num = num >> 32;
+		}
+		unsigned long ev_word = entry_ptr[3];
+		print("Key %ld: %ld values cached, claimed: %ld, event word %lx", returned_key, num, is_claimed, ev_word);
+		entry_ptr[1] = kv_arr_addr;
+
+		if(is_claimed == 1) {ret_cont_word = evw_update_event(CEVNT, receiver_update_unresolved_kv_count);}
+		else {ret_cont_word = evw_update_event(CEVNT, receiver_materialize_kv_ret);}
+		ret_cont_word = evw_update_thread(ret_cont_word, NEWTH);
+
+
+		// Read materialize_kv_cache metadata
+		// Locate start of materialize_kv_cache
+		ptr = base_ptr + materializing_metadata_offset;
+		unsigned long start = ptr[0];
+		unsigned long next_change_stop = ((start / materialize_kv_cache_count) + 1) * materialize_kv_cache_count;
+		unsigned long start_written_flag = 0;
+		unsigned long end;
+		// long tmp = ((start / materialize_kv_cache_count) % 64) << 16;
+		// long tmp1 = (start % materialize_kv_cache_count) * inter_kvpair_size * 8;
+		// tmp = base_ptr + tmp + materialize_kv_cache_offset;
+		// ptr = tmp + tmp1;
+		if (1) {
+			// long tmp = ((start / materialize_kv_cache_count) % 64) << 16;
+			// long tmp1 = (start % materialize_kv_cache_count) * inter_kvpair_size * 8;
+			// tmp = base_ptr + tmp + materialize_kv_cache_offset;
+			// ptr = tmp + tmp1;
+			unsigned long tmp = start / materialize_kv_cache_count;
+			tmp = tmp % 64;
+			tmp = tmp << 16;
+			tmp = tmp + materialize_kv_cache_offset;
+			tmp = tmp + base_ptr;
+			unsigned long tmp1 = start % materialize_kv_cache_count;
+			tmp1 = tmp1 * inter_kvpair_size;
+			tmp1 = tmp1 * 8;
+			end = ptr[1];
+			ptr = tmp + tmp1;
+		}
+
+		entry_ptr = entry_ptr + 16;
+		while (num > 0) {
+			if (ptr[0] != -1) {
+				// unsigned long tmp = ptr[0];
+				if (ptr[0] == returned_key){
+					print("Matched: entry %ld reads %ld at %lu", start, ptr[0], ptr);
+					num = num - 1;
+					if (num == 0) {
+						unsigned long tmp, cswp_ret=num+1;
+						while (num != cswp_ret) {
+							num = entry_ptr[0];
+							asm {
+								"movlr 0(%[entry_ptr]) %[tmp] 0 4
+								cswp %[entry_ptr] %[cswp_ret] %[num] %[tmp]"
+							} : [entry_ptr] "r" (entry_ptr), [cswp_ret] "r" (cswp_ret), [tmp] "r" (tmp), [num] "r" (num);
+						}
+						num = num >> 32;
+					}
+					// If matched, first double check if key just got claimed
+					if (is_claimed == 0) {
+						is_claimed = entry_ptr[-2] & 1;
+						if(is_claimed) {
+							// If just got claimed, wait till claimed dest evword is written
+							ret_cont_word = evw_update_event(ret_cont_word, receiver_update_unresolved_kv_count);
+							ev_word = entry_ptr[1];
+							print("Key %ld just got claimed, event word %lx", returned_key, ev_word);
+							while (entry_ptr[1] == -1) {
+								ev_word = entry_ptr[1];
+							}
+						}
+					}
+					if (is_claimed) {
+						send_event(ev_word, ptr, inter_kvpair_size, ret_cont_word);
+					}
+					else {
+						// If not claimed
+						// Update materialized count atomically to find an empty entry
+						unsigned long tmp;
+						if(1) {
+							long cswp_ret, tmp1;
+							tmp=cswp_ret+1;
+							while(cswp_ret != tmp) {
+								tmp = entry_ptr[0];
+								tmp1 = tmp+1;
+								asm {
+									"cswp %[entry_ptr] %[cswp_ret] %[tmp] %[tmp1]"
+								} : [entry_ptr] "r" (entry_ptr), [cswp_ret] "r" (cswp_ret), [tmp] "r" (tmp), [tmp1] "r" (tmp1);
+							}
+							tmp = tmp << 32;
+							tmp = tmp >> 32;
+						} 
+						ev_word = kv_arr_addr + ((tmp * inter_kvpair_size) << 3);
+						long* dest = ev_word;
+						print("receive_ptr materialize key %ld to Dram %lu(0x%lx) as the %ld-th kv", returned_key, dest, dest, tmp);
+						send_dram_write(dest, ptr, inter_kvpair_size, ret_cont_word);
+					}
+
+					// Erase this entry
+					for (int tmp=0; tmp<inter_kvpair_size; tmp=tmp+1) { 
+						ptr[tmp] = -1; 
+					}
+				}
+				else {
+					long tmp = ptr[0];
+					long* local tmp1;
+					// print("Not matching: entry %ld reads %ld at %lu", start, tmp, ptr);
+					// If not matched for the first time, write new start to spd
+					if (start_written_flag == 0){
+						tmp1 = base_ptr + materializing_metadata_offset;
+						// long tmp;
+						long cswp_ret = tmp+1;
+						while(cswp_ret != tmp) {
+							tmp = tmp1[0];
+							if(tmp >= start) {break;}
+							asm {
+								"cswp %[ptr] %[cswp_ret] %[tmp] %[start]"
+							} : [ptr] "r" (tmp1), [cswp_ret] "r" (cswp_ret), [tmp] "r" (tmp), [start] "r" (start);
+						}
+						start_written_flag = 1;
+					}
+				}
+			}
+			// Step forward one entry
+			start = start + 1;
+			if (start == next_change_stop) {
+				// If going across lanes, update ptr
+				ptr = base_ptr + (((start / materialize_kv_cache_count) % 64) << 16) + materialize_kv_cache_offset;
+				next_change_stop = next_change_stop + materialize_kv_cache_count;
+			}
+			else { ptr = ptr + inter_kvpair_size * 8;} // If going inside lane, increment ptr
+		}
+
+		// Write new start to spd if haven't
+		if (start_written_flag == 0) {
+			long* local tmp1 = base_ptr + materializing_metadata_offset;
+			long tmp;
+			long cswp_ret = tmp+1;
+			while(cswp_ret != tmp) {
+				tmp = tmp1[0];
+				if(tmp >= start) {break;}
+				asm {
+					"cswp %[ptr] %[cswp_ret] %[tmp] %[start]"
+				} : [ptr] "r" (tmp1), [cswp_ret] "r" (cswp_ret), [tmp] "r" (tmp), [start] "r" (start);
+			}
+			start_written_flag = 1;
+		}
+
+		yield_terminate;
+	}
+
+
+	event receiver_materialize_kv_ret(unsigned long dram_addr){
+		yield_terminate;
+	}
+
+	event receiver_update_unresolved_kv_count(long tmp){
+		yield_terminate;
+	}
+
+
+}

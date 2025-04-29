@@ -15,7 +15,22 @@
 typedef std::chrono::system_clock timer;
 
 #include <sys/types.h>
-#include "sorting_exe.hpp"
+#include "sortingEFA_nlb_map.hpp"
+#include "sortingEFA_ws_map.hpp"
+#include "sortingEFA_rh_nlbstrm_off_map.hpp"
+#include "sortingEFA_rh_nlbstrm_on_map.hpp"
+#include "sortingEFA_rh_random_map.hpp"
+#include "sortingEFA_nlb_reduce.hpp"
+#include "sortingEFA_ws_reduce.hpp"
+#include "sortingEFA_rh_nlbstrm_off_reduce.hpp"
+#include "sortingEFA_rh_nlbstrm_on_reduce.hpp"
+#include "sortingEFA_rh_random_reduce.hpp"
+#include "sortingEFA_nlb_insertion.hpp"
+#include "sortingEFA_ws_insertion.hpp"
+#include "sortingEFA_rh_nlbstrm_off_insertion.hpp"
+#include "sortingEFA_rh_nlbstrm_on_insertion.hpp"
+#include "sortingEFA_rh_random_insertion.hpp"
+
 #include "updown_config.h"
 #ifdef BASIM
 #include <basimupdown.h>
@@ -177,33 +192,57 @@ int main(int argc, char* argv[]) {
     printf("%s\n", USAGE);
     exit(1);
   }
+  std::string mode = argv[1];
 
-  uint64_t num_nodes = atoi(argv[1]);
+  uint64_t num_nodes = atoi(argv[2]);
+
+  std::string sortmode = argv[3];
   uint64_t num_uds_per_node = NUM_UD_PER_CLUSTER * NUM_CLUSTER_PER_NODE;
   uint64_t num_lanes_per_ud = NUM_LANE_PER_UD;
 
   uint64_t updown_count = num_nodes * num_uds_per_node;
 
-  if (num_nodes < 2) {
-    num_nodes = 1;
-    num_uds_per_node = atoi(argv[2]);
-    if (num_uds_per_node < 2) {
-      num_uds_per_node = 1;
-      num_lanes_per_ud = atoi(argv[3]);
-    }  
-  } 
+  // if (num_nodes < 2) {
+  //   num_nodes = 1;
+  //   num_uds_per_node = atoi(argv[2]);
+  //   if (num_uds_per_node < 2) {
+  //     num_uds_per_node = 1;
+  //     num_lanes_per_ud = atoi(argv[3]);
+  //   }  
+  // } 
+  std::unordered_map<std::string, int> event_labels = {
+    {"nlb_map", sortingEFA_nlb_map::SortingTest__test},
+    {"ws_map", sortingEFA_ws_map::SortingTest__test},
+    {"rh_nlbstrm_off_map", sortingEFA_rh_nlbstrm_off_map::SortingTest__test},
+    {"rh_nlbstrm_on_map", sortingEFA_rh_nlbstrm_on_map::SortingTest__test},
+    {"rh_random_map", sortingEFA_rh_random_map::SortingTest__test},
+    {"nlb_reduce", sortingEFA_nlb_reduce::SortingTest__test},
+    {"ws_reduce", sortingEFA_ws_reduce::SortingTest__test},
+    {"rh_nlbstrm_off_reduce", sortingEFA_rh_nlbstrm_off_reduce::SortingTest__test},
+    {"rh_nlbstrm_on_reduce", sortingEFA_rh_nlbstrm_on_reduce::SortingTest__test},
+    {"rh_random_reduce", sortingEFA_rh_random_reduce::SortingTest__test},
+    {"nlb_insertion", sortingEFA_nlb_insertion::SortingTest__test},
+    {"ws_insertion", sortingEFA_ws_insertion::SortingTest__test},
+    {"rh_nlbstrm_off_insertion", sortingEFA_rh_nlbstrm_off_insertion::SortingTest__test},
+    {"rh_nlbstrm_on_insertion", sortingEFA_rh_nlbstrm_on_insertion::SortingTest__test},
+    {"rh_random_insertion", sortingEFA_rh_random_insertion::SortingTest__test}
+  };
+  assert(event_labels.find(mode + "_" + sortmode) != event_labels.end());
+  std::cout << "Executing mode: " << mode << std::endl;
+  std::cout << "Sort mode: " << sortmode << std::endl;
+  std::cout << "Label: " << event_labels[mode + "_" + sortmode] << std::endl;
   
   uint64_t bin_extra_factor = 10;
   uint64_t num_input_keys = atoi(argv[4]);
   uint64_t num_bins = atoi(argv[5]);
   uint64_t num_partition_per_lane = 1;
-  uint64_t using_lb = atoi(argv[6]);
+  // uint64_t using_lb = atoi(argv[6]);
   // 0 is reducer/normal, 
   // uint64_t sorting_version = atoi(argv[6]);
   
-  uint64_t max_value = atoll(argv[7]);
+  uint64_t max_value = atoll(argv[6]);
   // uint64_t add_size = atoi(argv[8]);
-  uint64_t sigma_divider = atoi(argv[8]);
+  uint64_t sigma_divider = atoi(argv[7]);
   uint64_t start_lane_offset = 0;
   assert(num_input_keys % num_bins == 0);
   // if(argc >= 9) {
@@ -223,7 +262,9 @@ int main(int argc, char* argv[]) {
 
   // Set up machine parameters
   UpDown::ud_machine_t machine;
-  machine.MapMemSize = (1UL << 37) + (1UL << 36); // 128GB
+  // machine.MapMemSize = (1UL << 37) + (1UL << 36); // 128GB
+  machine.MapMemSize = (1UL << 37); // 128GB
+  // machine.MapMemSize = (1UL << 36); // 128GB
   machine.NumLanes = num_lanes_per_ud;
   machine.NumUDs = std::min((int)num_uds_per_node, NUM_UD_PER_CLUSTER);
   machine.NumStacks = std::ceil((double)num_uds_per_node / NUM_UD_PER_CLUSTER);
@@ -239,7 +280,7 @@ int main(int argc, char* argv[]) {
   logFolder +=  ".logs";
 
   // UpDown::BASimUDRuntime_t* testKVMSR_rt = new UpDown::BASimUDRuntime_t(machine, "sorting_exe.bin", 0, logFolder);
-  UpDown::BASimUDRuntime_t* testKVMSR_rt = new UpDown::BASimUDRuntime_t(machine, "sorting_exe.bin", 0);
+  UpDown::BASimUDRuntime_t* testKVMSR_rt = new UpDown::BASimUDRuntime_t(machine, "sortingEFA_" + mode + "_" + sortmode + ".bin", 0, 1);
   // testKVMSR_rt->initLogs(std::filesystem::path(programFile + ".logs").filename());
 
   printf("here-2\n");
@@ -247,37 +288,52 @@ int main(int argc, char* argv[]) {
 
 #else
   // Init runtime
-  UpDown::SimUDRuntime_t *testKVMSR_rt = new UpDown::SimUDRuntime_t(machine, "sorting_exe", "sorting_exe", "./", UpDown::EmulatorLogLevel::FULL_TRACE);
+  UpDown::SimUDRuntime_t *testKVMSR_rt = new UpDown::SimUDRuntime_t(machine, "sortingEFA", "sortingEFA", "./", UpDown::EmulatorLogLevel::FULL_TRACE);
 #endif
   uint64_t* lb_tmp_addr = 0;
   printf("here-1\n");
   fflush(stdout);
 
-  if(using_lb) {
-
-    // if reduce bin sort
-    // work_stealing 
-    // lb_tmp_addr = gen_intermediate_kv_do_all_lane(testKVMSR_rt, updown_count, 1<<20, 3);
-
-    // not work_stealing
-    lb_tmp_addr = gen_intermediate_kv_do_all(testKVMSR_rt, updown_count, 1<<20, 3);
-
-
-
-    // if map bin sort or insertion sort
-    // work stealing
-    // lb_tmp_addr = gen_intermediate_kv(testKVMSR_rt, num_lanes, 16, 2048 * 3);
-    // lb_tmp_addr = gen_intermediate_kv(testKVMSR_rt, num_lanes, 64, 2048 * 3);
-
-    // not work_stealing
-    // lb_tmp_addr = gen_intermediate_kv_ud(testKVMSR_rt, updown_count, 64 * 16, 2048 * 3);
-    // lb_tmp_addr = gen_intermediate_kv_ud(testKVMSR_rt, updown_count, 64 * 64, 2048 * 3);
-
-
-
-
-    printf("using lb, addr = %lu", lb_tmp_addr);
+  if (sortmode == "reduce")  {
+    if (mode == "ws") {
+      lb_tmp_addr = gen_intermediate_kv_do_all_lane(testKVMSR_rt, updown_count, 1<<20, 3);
+    }
+    else {
+      lb_tmp_addr = gen_intermediate_kv_do_all(testKVMSR_rt, updown_count, 1<<20, 3);
+    }
+  } else {
+    if (mode == "ws") {
+      lb_tmp_addr = gen_intermediate_kv(testKVMSR_rt, num_lanes, 64, 2048 * 3);
+    }
+    else {
+      lb_tmp_addr = gen_intermediate_kv_ud(testKVMSR_rt, updown_count, 64 * 64, 2048 * 3);
+    }
   }
+  // if(using_lb) {
+
+  //   // if reduce bin sort
+  //   // work_stealing 
+  //   // lb_tmp_addr = gen_intermediate_kv_do_all_lane(testKVMSR_rt, updown_count, 1<<20, 3);
+
+  //   // not work_stealing
+  //   // lb_tmp_addr = gen_intermediate_kv_do_all(testKVMSR_rt, updown_count, 1<<20, 3);
+
+
+
+  //   // if map bin sort or insertion sort
+  //   // work stealing
+  //   // lb_tmp_addr = gen_intermediate_kv(testKVMSR_rt, num_lanes, 16, 2048 * 3);
+  //   // lb_tmp_addr = gen_intermediate_kv(testKVMSR_rt, num_lanes, 64, 2048 * 3);
+
+  //   // not work_stealing
+  //   // lb_tmp_addr = gen_intermediate_kv_ud(testKVMSR_rt, updown_count, 64 * 16, 2048 * 3);
+  //   // lb_tmp_addr = gen_intermediate_kv_ud(testKVMSR_rt, updown_count, 64 * 64, 2048 * 3);
+
+
+
+
+  //   // printf("using lb, addr = %lu", lb_tmp_addr);
+  // }
 
 #ifdef DEBUG
   printf("=== Base Addresses ===\n");
@@ -491,7 +547,7 @@ int main(int argc, char* argv[]) {
   UpDown::networkid_t nwid(start_lane_offset, false, 0);
 
   for (int iter = 0; iter < 1; iter++) {
-    UpDown::event_t evnt_ops(sorting_exe::SortingTest__test /*Event Label*/,
+    UpDown::event_t evnt_ops(event_labels[mode + "_" + sortmode] /*Event Label*/,
                                 nwid,
                                 UpDown::CREATE_THREAD /*Thread ID*/,
                                 &ops /*Operands*/);
@@ -530,136 +586,7 @@ int main(int argc, char* argv[]) {
 
 #endif
 
-//   printf("-------------------\nUpDown program termiantes. Verify the result output kv set.\n");
-//   for (int i = 0; i < num_lanes; i++) {
-//     printf("Output array element %d: key=%d value=%ld DRAM_addr=%p\n", i, i, outKVSet[i], outKVSet + i);
-//   }
 
-//   printf("-------------------\nUpDown program termiantes. Verify the output of rows.\n");
-
-   
-  // printf("input: \n");
-  // for (int i = 0; i < num_input_keys; i++) {
-  //   printf("%ld ", inKVSet[i]);
-  // }
-  // printf("\n");
-#ifndef GEM5_MODE
-
-  std::sort(inputVec.begin(), inputVec.end());
-
-  // for (int i = 0; i < num_bins; i++) {
-  //   // uint64_t len = i * bin_extra_factor * (num_input_keys / num_bins);
-  //   uint64_t start = bin_extra_factor * num_input_keys;
-  //   uint64_t &bin_size = outputTempSet[start + i];
-  //   printf("Bin %d, size %lu, addr %lu \n", i, bin_size, &bin_size);
-  // }
-
-  // for (int i = 0; i < num_bins; i++) {
-  //   uint64_t len = i * bin_extra_factor * (num_input_keys / num_bins);
-  //   uint64_t start = bin_extra_factor * num_input_keys;
-  //   uint64_t bin_size = outputTempSet[start + i + 1] - outputTempSet[start + i];
-  //   uint64_t bstart = outputTempSet[start + i];
-  //   uint64_t bend = outputTempSet[start + i + 1];
-
-  //   // printf("Bin %d, addr %lu: \n", i, outputTempSet + len);
-  //   // for (uint64_t j = len; j < len + (num_input_keys / num_bins) * 3; j++) {
-  //   //   printf("%d ", outputTempSet[j]);
-  //   // }
-  //   // printf("\n");
-  //   bool sorted = true;
-  //   //   printf("Bin %d, addr %lu: \n", i, outputTempSet + len);
-  //   for (uint64_t j = len; j < len + bin_size; j++) {
-  //     sorted &= (outputTempSet[j] == inputVec[j - len + bstart]);
-  //     if(i == 60) {
-  //       printf("entry: %ld %ld %ld\n", outputTempSet + j, outputTempSet[j], inputVec[j - len + bstart]);
-  //     }
-  //     // if(outputTempSet[j] != inputVec[j - len + bstart]) {
-  //     //   printf("Bin %d, addr %lu: %ld %ld\n", i, outputTempSet + len, outputTempSet[j], inputVec[j - len + bstart]);
-  //     // }
-  //     // printf("%d ", outputTempSet[j]);
-  //   }
-  //   printf("bin %d is %s\n", i, (sorted ? "sorted" : "not sorted"));
-  //   // printf("\n");
-  // }
-
-  
-  // printf("-------------------\nPrefix sum array\n");
-  // uint64_t start = bin_extra_factor * num_input_keys;
-  // for (int i = 0; i <= num_bins; i++) {
-  //   // printf("%d ",outputTempSet[start + i]);
-  //   printf("%ld %d\n", &outputTempSet[start + i], outputTempSet[start + i]);
-  // }
-//   printf("\n");
-//   printf("-------------------\n Block sum array\n");
-//   start = bin_extra_factor * num_input_keys + num_lanes;
-//   for (int i = 0; i < num_lanes / 2; i++) {
-//     printf("%ld %d \n", &outputTempSet[start + i], outputTempSet[start + i]);
-//   }
-//   printf("\n");
-
-//   std::sort(inputVec.begin(), inputVec.end());
-//   if(using_unique) {
-//     inputVec.erase(std::unique(inputVec.begin(), inputVec.end()), inputVec.end());
-//   }
-//   printf("Input array.\n");
-//   for (int i = 0; i < inputOri.size(); i++) {
-//     printf("%ld ", inputOri[i]);
-//   }
-//   printf("\n");
-//   printf("Actual result array.\n");
-//   for (int i = 0; i < inputVec.size(); i++) {
-//     printf("%ld ", inKVSet[i]);
-//     // printf("%ld %ld\n", &inKVSet[i], inKVSet[i]);
-//   }
-//   printf("\n");
-//   bool result = true;
-//   printf("Expected result array.\n");
-//   for (int i = 0; i < inputVec.size(); i++) {
-//     // printf("%ld ", inKVSet[i]);
-//     printf("%ld ", inputVec[i]);
-//     result &= (inKVSet[i] == inputVec[i]);
-//   }
-//   printf("\n");
-//   printf("final length: %ld\n", inputVec.size());
-//   printf("result: %s\n", (result ? "correct" : "incorrect"));
-
-  UpDown::word_t * bin_size_start = outputTempSet + binBlockSize / 8;
-  // for (int i = 0; i < num_bins; i++) {
-  //   printf("Bin %lu size: %ld\n", bin_size_start, bin_size_start[i]);
-  // }
-
-  // Final array
-  // if(using_unique) {
-  //   inputVec.erase(std::unique(inputVec.begin(), inputVec.end()), inputVec.end());
-  // }
-  // printf("Input array.\n");
-  // for (int i = 0; i < inputOri.size(); i++) {
-  //   printf("%ld ", inputOri[i]);
-  // }
-  // printf("\n");
-  // printf("Actual result array.\n");
-  // for (int i = 0; i < inputVec.size(); i++) {
-  //   printf("%ld ", inKVSet[i]);
-  //   // printf("%ld %ld\n", &inKVSet[i], inKVSet[i]);
-  // }
-  // printf("\n");
-  bool result = true;
-  // printf("Expected result array.\n");
-  for (int i = 0; i < inputVec.size(); i++) {
-    // printf("%ld ", inKVSet[i]);
-    // printf("%ld ", inputVec[i]);
-    result &= (inKVSet[i] == inputVec[i]);
-  }
-  printf("\n");
-  printf("\n");
-  printf("final length: %ld\n", inputVec.size());
-  // std::cout << "array: ";
-  // for (int i = 0; i < num_input_keys; i++) {
-  //   printf("%ld ", inKVSet[i]);
-  // }
-  printf("\n");
-  printf("result: %s\n", (result ? "correct" : "incorrect"));
-#endif
 
   delete testKVMSR_rt;
   printf("Test UDKVMSR program finishes.\n");

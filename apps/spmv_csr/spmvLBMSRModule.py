@@ -4,10 +4,23 @@ from linker.EFAProgram import efaProgram, EFAProgram
 from libraries.UDMapShuffleReduce.linkable.LinkableKVMapShuffleCombineTPL import UDKeyValueMapShuffleReduceTemplate
 from spmvConfig import *
 
+EXTENSION = 'non_load_balancing'
+test_ws = False
+test_random = False
+DEBUG_FLAG = False
+LB_TYPE = ['mapper']
+rtype = 'lane' if test_ws else 'ud'
+multi = not test_ws
+map_ws = test_ws
+red_ws = test_ws
+
 @efaProgram
 def GenLinkableMapShuffleReduceEFA(efa: EFAProgram):
 
-    testMSR = UDKeyValueMapShuffleReduceTemplate(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=False, extension='load_balancer', test_map_ws=False)
+    # testMSR = UDKeyValueMapShuffleReduceTemplate(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=False, extension='load_balancer', test_map_ws=False)
+    testMSR = UDKeyValueMapShuffleReduceTemplate(efa=efa, task_name=TASK_NAME, meta_data_offset=METADATA_OFFSET, debug_flag=DEBUG_FLAG, 
+                                                extension = EXTENSION, load_balancer_type = LB_TYPE, grlb_type = rtype, 
+                                                claim_multiple_work = multi, test_map_ws=map_ws, test_reduce_ws=red_ws, random_lb=test_random)
     testMSR.set_input_kvset(INPUT_KVSET)
     if ENABLE_REDUCE:
         testMSR.set_intermediate_kvset(INTERMEDIATE_KVSET)

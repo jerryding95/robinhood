@@ -7,9 +7,10 @@ if (UPDOWNRT_ENABLE_APPS)
     set(GEM5_DEPS m5 rt)
 
     set(UPDOWNSIMRT_APPS_SRC 
-        spmv_coo/spmv_udkvmsr.cpp
-        spmv_csr/spmvLBMSRPerfFileTest.cpp
-        pr/pagerankMapShuffleReduce.cpp
+        spmv_coo/spmv_coo.cpp
+        spmv_csr/spmv_csr.cpp
+        pr/preprocess_pagerank.cpp
+        pr/pr.cpp
         tc/tc.cpp
         js/js.cpp
         sorting/sorting.cpp
@@ -26,10 +27,20 @@ if (UPDOWNRT_ENABLE_APPS)
     )
 
     set(UPDOWNSIMRT_PYTHON_APPS_SRC2BIN
-        spmv_coo/spmvMSR.py
-        spmv_csr/spmv_msr_exe.py
-        spmv_csr/spmv_lbmsr_exe.py
-        pr/PagerankMsrEFA.py
+        spmv_coo/spmvMSR_nlb.py
+        spmv_coo/spmvMSR_ws.py
+        spmv_coo/spmvMSR_rh_nlbstrm_off.py
+        spmv_coo/spmvMSR_rh_nlbstrm_on.py
+        spmv_coo/spmvMSR_rh_random.py
+        spmv_csr/spmv_lbmsr_exe_nlb.py
+        spmv_csr/spmv_lbmsr_exe_ws.py
+        spmv_csr/spmv_lbmsr_exe_rh_nlbstrm_on.py
+        spmv_csr/spmv_lbmsr_exe_rh_random.py
+        pr/PagerankMsrEFA_nlb.py
+        pr/PagerankMsrEFA_ws.py
+        pr/PagerankMsrEFA_rh_nlbstrm_off.py
+        pr/PagerankMsrEFA_rh_nlbstrm_on.py
+        pr/PagerankMsrEFA_rh_random.py
         tc/tc_udkvmsr_exe_nlb.py
         tc/tc_udkvmsr_exe_ws.py
         tc/tc_udkvmsr_exe_rh_nlbstrm_off.py
@@ -45,7 +56,21 @@ if (UPDOWNRT_ENABLE_APPS)
         gcn_vanilla/gcn_udkvmsr_exe_rh_random.py
         gcn_vanilla/gcn_udkvmsr_exe_ws.py
         gcn_vanilla/gcn_udkvmsr_exe_nlb.py
-        sorting/sorting_exe.py
+        sorting/sortingEFA_nlb_map.py
+        sorting/sortingEFA_ws_map.py
+        sorting/sortingEFA_rh_nlbstrm_off_map.py
+        sorting/sortingEFA_rh_nlbstrm_on_map.py
+        sorting/sortingEFA_rh_random_map.py
+        sorting/sortingEFA_nlb_reduce.py
+        sorting/sortingEFA_ws_reduce.py
+        sorting/sortingEFA_rh_nlbstrm_off_reduce.py
+        sorting/sortingEFA_rh_nlbstrm_on_reduce.py
+        sorting/sortingEFA_rh_random_reduce.py
+        sorting/sortingEFA_nlb_insertion.py
+        sorting/sortingEFA_ws_insertion.py
+        sorting/sortingEFA_rh_nlbstrm_off_insertion.py
+        sorting/sortingEFA_rh_nlbstrm_on_insertion.py
+        sorting/sortingEFA_rh_random_insertion.py
     )
 
 

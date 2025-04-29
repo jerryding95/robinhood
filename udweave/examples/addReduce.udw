@@ -1,0 +1,15 @@
+thread add_reduce {
+    int val;
+
+    event init(int initVal) {
+        val = initVal;
+    }
+
+    event add(int nval) {
+        val = val + nval;
+    }
+
+    event deinit() {
+        yield_terminate;
+    }
+}

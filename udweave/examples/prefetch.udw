@@ -1,0 +1,35 @@
+
+thread prefetch {
+
+    int unsigned count, nElements;
+    int * local destination;
+    int * source;
+    int unsigned stride;
+
+    event start(int * src, int numElements, int strd) {
+        destination = 0;
+        count = 0;
+        source = src;
+        stride = strd;
+        nElements = numElements;
+
+        int unsigned off = 0;
+        for(int i = 0; i < numElements; i = i+1) {
+            send_dram_read(src + off, sizeof(int), write);
+            off = off + stride/sizeof(int);
+        }
+    }
+    
+    event write(int val, int * addr) {
+        int unsigned off = addr - source;
+        off = off / stride;
+        destination[off] = val;
+        count = count + 1;
+        if (count == nElements) {
+            // Maybe signal the top?
+            yield_terminate;
+        } else {
+            yield;
+        }
+    }
+}

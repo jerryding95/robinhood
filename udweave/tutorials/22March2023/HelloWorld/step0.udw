@@ -1,0 +1,5 @@
+thread exampleThread{
+    event begin() { }
+
+    event end() {  }
+}

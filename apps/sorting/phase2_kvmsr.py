@@ -7,7 +7,7 @@ from libraries.UDMapShuffleReduce.linkable.LinkableKVMapShuffleCombineTPL import
 
 from libraries.UDMapShuffleReduce.utils.OneDimArrayKeyValueSet import OneDimKeyValueSet
 from libraries.UDMapShuffleReduce.utils.IntermediateKeyValueSet import IntermediateKeyValueSet
-from libraries.UDMapShuffleReduce.utils.SHTKeyValueSet import SHTKeyValueSet
+# from libraries.UDMapShuffleReduce.utils.SHTKeyValueSet import SHTKeyValueSet
 from libraries.SingleLaneSort.hybrid_single_lane import SingleLaneSort
 
 import LMStaticMap as Defs

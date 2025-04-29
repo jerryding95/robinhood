@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+parser.out
+parsetab.py
+.test_output
+Output
+.idea/
+.vscode/
